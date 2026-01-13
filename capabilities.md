@@ -7096,3 +7096,647 @@ Note: Citations are all-or-nothing. Either all search results in a request must 
 - Explore [prompt caching](/docs/build/caching) to optimize repeated searches
 - Check out [batch processing](/docs/build/batch) for cost-effective bulk operations
 - Review [vision capabilities](/docs/build/vision) to enhance search results with image analysis
+
+---
+
+# Structured outputs
+
+Get validated JSON results from agent workflows.
+
+---
+
+Structured outputs constrain Claude's responses to follow a specific schema, ensuring valid, parseable output for downstream processing. Two complementary features are available:
+
+- **JSON outputs** (`output_format`): Get Claude's response in a specific JSON format
+- **Strict tool use** (`strict: true`): Guarantee schema validation on tool names and inputs
+
+These features can be used independently or together in the same request.
+
+## Status
+
+Structured outputs are currently available as a public beta feature in the Claude API for:
+- Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`)
+- Claude Opus 4.1 (`claude-opus-4-1-20250805`)
+- Claude Opus 4.5 (`claude-opus-4-5-20251101`)
+- Claude Haiku 4.5 (`claude-haiku-4-5-20251001`)
+
+To use the feature, set the beta header `structured-outputs-2025-11-13`.
+
+## Why use structured outputs
+
+Without structured outputs, Claude can generate malformed JSON responses or invalid tool inputs that break your applications. Even with careful prompting, you may encounter:
+- Parsing errors from invalid JSON syntax
+- Missing required fields
+- Inconsistent data types
+- Schema violations requiring error handling and retries
+
+Structured outputs guarantee schema-compliant responses through constrained decoding:
+- **Always valid**: No more JSON parse errors
+- **Type safe**: Guaranteed field types and required fields
+- **Reliable**: No retries needed for schema violations
+
+## JSON outputs
+
+JSON outputs control Claude's response format, ensuring Claude returns valid JSON matching your schema. Use JSON outputs when you need to:
+- Control Claude's response format
+- Extract data from images or text
+- Generate structured reports
+- Format API responses
+
+### Quick start
+
+**Shell:**
+```bash
+curl https://api.anthropic.com/v1/messages \
+  -H "content-type: application/json" \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: structured-outputs-2025-11-13" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": "Extract the key information from this email: John Smith (john@example.com) is interested in our Enterprise plan and wants to schedule a demo for next Tuesday at 2pm."
+      }
+    ],
+    "output_format": {
+      "type": "json_schema",
+      "schema": {
+        "type": "object",
+        "properties": {
+          "name": {"type": "string"},
+          "email": {"type": "string"},
+          "plan_interest": {"type": "string"},
+          "demo_requested": {"type": "boolean"}
+        },
+        "required": ["name", "email", "plan_interest", "demo_requested"],
+        "additionalProperties": false
+      }
+    }
+  }'
+```
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+response = client.beta.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    betas=["structured-outputs-2025-11-13"],
+    messages=[
+        {
+            "role": "user",
+            "content": "Extract the key information from this email: John Smith (john@example.com) is interested in our Enterprise plan and wants to schedule a demo for next Tuesday at 2pm."
+        }
+    ],
+    output_format={
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "email": {"type": "string"},
+                "plan_interest": {"type": "string"},
+                "demo_requested": {"type": "boolean"}
+            },
+            "required": ["name", "email", "plan_interest", "demo_requested"],
+            "additionalProperties": False
+        }
+    }
+)
+print(response.content[0].text)
+```
+
+**TypeScript:**
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY
+});
+
+const response = await client.beta.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  betas: ["structured-outputs-2025-11-13"],
+  messages: [
+    {
+      role: "user",
+      content: "Extract the key information from this email: John Smith (john@example.com) is interested in our Enterprise plan and wants to schedule a demo for next Tuesday at 2pm."
+    }
+  ],
+  output_format: {
+    type: "json_schema",
+    schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        email: { type: "string" },
+        plan_interest: { type: "string" },
+        demo_requested: { type: "boolean" }
+      },
+      required: ["name", "email", "plan_interest", "demo_requested"],
+      additionalProperties: false
+    }
+  }
+});
+console.log(response.content[0].text);
+```
+
+**Response format:** Valid JSON matching your schema
+
+```json
+{
+  "name": "John Smith",
+  "email": "john@example.com",
+  "plan_interest": "Enterprise",
+  "demo_requested": true
+}
+```
+
+### How it works
+
+1. **Define your JSON schema** - Create a JSON schema describing the structure you want Claude to follow
+2. **Add the output_format parameter** - Include the `output_format` parameter with your schema
+3. **Include the beta header** - Add `anthropic-beta: structured-outputs-2025-11-13`
+4. **Parse the response** - Claude's response will be valid JSON matching your schema
+
+### Using Pydantic and Zod
+
+For Python and TypeScript developers, use familiar schema tools like Pydantic and Zod instead of raw JSON schemas.
+
+**Python with Pydantic:**
+```python
+from pydantic import BaseModel
+import anthropic
+
+class ContactInfo(BaseModel):
+    name: str
+    email: str
+    plan_interest: str
+    demo_requested: bool
+
+client = anthropic.Anthropic()
+
+# Using parse() method (recommended)
+response = client.beta.messages.parse(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    betas=["structured-outputs-2025-11-13"],
+    messages=[
+        {
+            "role": "user",
+            "content": "Extract the key information from this email: John Smith (john@example.com) is interested in our Enterprise plan and wants to schedule a demo for next Tuesday at 2pm."
+        }
+    ],
+    output_format=ContactInfo,
+)
+
+# Access parsed output directly
+contact = response.parsed_output
+print(contact.name, contact.email)
+```
+
+**TypeScript with Zod:**
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+import { z } from 'zod';
+import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
+
+const ContactInfoSchema = z.object({
+  name: z.string(),
+  email: z.string(),
+  plan_interest: z.string(),
+  demo_requested: z.boolean(),
+});
+
+const client = new Anthropic();
+
+const response = await client.beta.messages.parse({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  betas: ["structured-outputs-2025-11-13"],
+  messages: [
+    {
+      role: "user",
+      content: "Extract the key information from this email: John Smith (john@example.com) is interested in our Enterprise plan and wants to schedule a demo for next Tuesday at 2pm."
+    }
+  ],
+  output_format: betaZodOutputFormat(ContactInfoSchema),
+});
+
+// Automatically parsed and validated
+console.log(response.parsed_output);
+```
+
+### Common use cases
+
+**Data extraction:**
+```python
+from pydantic import BaseModel
+from typing import List
+
+class Invoice(BaseModel):
+    invoice_number: str
+    date: str
+    total_amount: float
+    customer_name: str
+
+response = client.beta.messages.parse(
+    model="claude-sonnet-4-5",
+    betas=["structured-outputs-2025-11-13"],
+    output_format=Invoice,
+    messages=[{"role": "user", "content": f"Extract invoice data from: {invoice_text}"}]
+)
+```
+
+**Classification:**
+```python
+from pydantic import BaseModel
+from typing import List
+
+class Classification(BaseModel):
+    category: str
+    confidence: float
+    tags: List[str]
+    sentiment: str
+
+response = client.beta.messages.parse(
+    model="claude-sonnet-4-5",
+    betas=["structured-outputs-2025-11-13"],
+    output_format=Classification,
+    messages=[{"role": "user", "content": f"Classify this feedback: {feedback_text}"}]
+)
+```
+
+**API response formatting:**
+```python
+from pydantic import BaseModel
+from typing import List, Optional
+
+class APIResponse(BaseModel):
+    status: str
+    data: dict
+    errors: Optional[List[dict]] = None
+    metadata: dict
+
+response = client.beta.messages.parse(
+    model="claude-sonnet-4-5",
+    betas=["structured-outputs-2025-11-13"],
+    output_format=APIResponse,
+    messages=[{"role": "user", "content": "Process this request: ..."}]
+)
+```
+
+## Strict tool use
+
+Strict tool use validates tool parameters, ensuring Claude calls your functions with correctly-typed arguments. Use strict tool use when you need to:
+- Validate tool parameters
+- Build agentic workflows
+- Ensure type-safe function calls
+- Handle complex tools with nested properties
+
+### Why strict tool use matters for agents
+
+Building reliable agentic systems requires guaranteed schema conformance. Without strict mode, Claude might return incompatible types (`"2"` instead of `2`) or missing required fields, breaking your functions.
+
+Strict tool use guarantees type-safe parameters:
+- Functions receive correctly-typed arguments every time
+- No need to validate and retry tool calls
+- Production-ready agents that work consistently at scale
+
+### Quick start
+
+**Shell:**
+```bash
+curl https://api.anthropic.com/v1/messages \
+  -H "content-type: application/json" \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: structured-outputs-2025-11-13" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "What is the weather in San Francisco?"}
+    ],
+    "tools": [{
+      "name": "get_weather",
+      "description": "Get the current weather in a given location",
+      "strict": true,
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "The city and state, e.g. San Francisco, CA"
+          },
+          "unit": {
+            "type": "string",
+            "enum": ["celsius", "fahrenheit"]
+          }
+        },
+        "required": ["location"],
+        "additionalProperties": false
+      }
+    }]
+  }'
+```
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+response = client.beta.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    betas=["structured-outputs-2025-11-13"],
+    messages=[
+        {"role": "user", "content": "What's the weather like in San Francisco?"}
+    ],
+    tools=[
+        {
+            "name": "get_weather",
+            "description": "Get the current weather in a given location",
+            "strict": True,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "The city and state, e.g. San Francisco, CA"
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": ["celsius", "fahrenheit"]
+                    }
+                },
+                "required": ["location"],
+                "additionalProperties": False
+            }
+        }
+    ]
+)
+print(response.content)
+```
+
+**TypeScript:**
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY
+});
+
+const response = await client.beta.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  betas: ["structured-outputs-2025-11-13"],
+  messages: [
+    {
+      role: "user",
+      content: "What's the weather like in San Francisco?"
+    }
+  ],
+  tools: [{
+    name: "get_weather",
+    description: "Get the current weather in a given location",
+    strict: true,
+    input_schema: {
+      type: "object",
+      properties: {
+        location: {
+          type: "string",
+          description: "The city and state, e.g. San Francisco, CA"
+        },
+        unit: {
+          type: "string",
+          enum: ["celsius", "fahrenheit"]
+        }
+      },
+      required: ["location"],
+      additionalProperties: false
+    }
+  }]
+});
+console.log(response.content);
+```
+
+**Response format:** Tool use blocks with validated inputs
+
+```json
+{
+  "type": "tool_use",
+  "name": "get_weather",
+  "input": {
+    "location": "San Francisco, CA"
+  }
+}
+```
+
+### How it works
+
+1. **Define your tool schema** - Create a JSON schema for your tool's `input_schema`
+2. **Add strict: true** - Set `"strict": true` in your tool definition
+3. **Include the beta header** - Add `anthropic-beta: structured-outputs-2025-11-13`
+4. **Handle tool calls** - Claude's tool inputs will strictly follow your schema
+
+### Agentic workflow with validated tools
+
+**Python:**
+```python
+response = client.beta.messages.create(
+    model="claude-sonnet-4-5",
+    betas=["structured-outputs-2025-11-13"],
+    messages=[{"role": "user", "content": "Help me plan a trip to Paris for 2 people"}],
+    tools=[
+        {
+            "name": "search_flights",
+            "strict": True,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "origin": {"type": "string"},
+                    "destination": {"type": "string"},
+                    "departure_date": {"type": "string", "format": "date"},
+                    "travelers": {"type": "integer", "enum": [1, 2, 3, 4, 5, 6]}
+                },
+                "required": ["origin", "destination", "departure_date"],
+                "additionalProperties": False
+            }
+        },
+        {
+            "name": "search_hotels",
+            "strict": True,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string"},
+                    "check_in": {"type": "string", "format": "date"},
+                    "guests": {"type": "integer", "enum": [1, 2, 3, 4]}
+                },
+                "required": ["city", "check_in"],
+                "additionalProperties": False
+            }
+        }
+    ]
+)
+```
+
+## Using both features together
+
+JSON outputs and strict tool use solve different problems and can be used together:
+- **JSON outputs** control Claude's response format (what Claude says)
+- **Strict tool use** validates tool parameters (how Claude calls your functions)
+
+When combined, Claude can call tools with guaranteed-valid parameters AND return structured JSON responses.
+
+**Python:**
+```python
+response = client.beta.messages.create(
+    model="claude-sonnet-4-5",
+    betas=["structured-outputs-2025-11-13"],
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Help me plan a trip to Paris for next month"}],
+    # JSON outputs: structured response format
+    output_format={
+        "type": "json_schema",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "summary": {"type": "string"},
+                "next_steps": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["summary", "next_steps"],
+            "additionalProperties": False
+        }
+    },
+    # Strict tool use: guaranteed tool parameters
+    tools=[{
+        "name": "search_flights",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "destination": {"type": "string"},
+                "date": {"type": "string", "format": "date"}
+            },
+            "required": ["destination", "date"],
+            "additionalProperties": False
+        }
+    }]
+)
+```
+
+## Performance and caching
+
+### Grammar compilation
+
+Structured outputs use constrained sampling with compiled grammar artifacts:
+- **First request latency**: Initial use of a schema has additional latency during grammar compilation
+- **Automatic caching**: Compiled grammars are cached for 24 hours, making subsequent requests faster
+- **Cache invalidation**: Cache is invalidated if you change:
+  - The JSON schema structure
+  - The set of tools in your request
+  - Note: Changing only `name` or `description` does not invalidate the cache
+
+### Token costs
+
+When using structured outputs, Claude receives an additional system prompt explaining the output format:
+- Your input token count will be slightly higher
+- The injected prompt costs tokens like any other system prompt
+- Changing `output_format` invalidates any prompt cache for that conversation
+
+## JSON Schema support
+
+Structured outputs support standard JSON Schema with limitations.
+
+### Supported features
+
+- All basic types: object, array, string, integer, number, boolean, null
+- `enum` (strings, numbers, bools, nulls only)
+- `const`
+- `anyOf` and `allOf` (with limitations)
+- `$ref`, `$def`, `definitions`
+- String formats: `date-time`, `time`, `date`, `duration`, `email`, `hostname`, `uri`, `ipv4`, `ipv6`, `uuid`
+- Array `minItems` (values 0 and 1 only)
+- `required` and `additionalProperties` (must be `false` for objects)
+
+### Not supported
+
+- Recursive schemas
+- Complex types within enums
+- External `$ref`
+- Numerical constraints (`minimum`, `maximum`, `multipleOf`)
+- String constraints (`minLength`, `maxLength`)
+- Array constraints beyond `minItems` of 0 or 1
+- `additionalProperties` other than `false`
+- Backreferences and lookahead/lookbehind in regex
+- Word boundaries in regex patterns
+
+## Feature compatibility
+
+**Works with:**
+- Batch processing (50% cost discount)
+- Token counting
+- Streaming
+- Combined usage (JSON outputs + strict tool use together)
+
+**Incompatible with:**
+- Citations (returns 400 error if citations enabled with `output_format`)
+- Message prefilling (incompatible with JSON outputs)
+
+## Error handling
+
+### Refusals
+
+If Claude refuses a request for safety reasons:
+- Response has `stop_reason: "refusal"`
+- You receive 200 status code
+- You're billed for generated tokens
+- Output may not match your schema
+
+### Token limit reached
+
+If response is cut off at `max_tokens`:
+- Response has `stop_reason: "max_tokens"`
+- Output may be incomplete and not match schema
+- Retry with higher `max_tokens`
+
+### Schema validation errors
+
+Common error scenarios:
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| "Too many recursive definitions" | Excessive cyclic definitions | Simplify schema, reduce nesting |
+| "Schema is too complex" | Exceeds complexity limits | Break into smaller schemas, reduce strict tools |
+| Invalid schema | Unsupported features used | Use only supported JSON Schema features |
+
+## Use cases
+
+**Structured data extraction**: Extract information from emails, documents, or images with guaranteed JSON output
+
+**Agentic workflows**: Build reliable multi-step agents with validated tool calls
+
+**Report generation**: Create structured reports with guaranteed format compliance
+
+**Classification systems**: Classify content with validated categories and metadata
+
+**API integration**: Generate API-ready responses with guaranteed schema compliance
+
+**Workflow automation**: Extract and route information to downstream systems without validation
+
+## Next steps
+
+- Learn about [tool use](/docs/build/tool-use) for advanced agent patterns
+- Explore [batch processing](/docs/build/batch) to use structured outputs at scale
+- Check out [extended thinking](/docs/build/extended-thinking) for complex reasoning with structured outputs
+- Review [streaming](/docs/build/streaming) to stream structured outputs
