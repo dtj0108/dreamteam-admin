@@ -1,32 +1,168 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireSuperadmin, logAdminAction } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { generateAgentSDKConfig } from '@/lib/agent-sdk'
 
-// GET /api/admin/agents/[id] - Get single agent
+// GET /api/admin/agents/[id] - Get single agent with all relations
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const { error } = await requireSuperadmin()
-  if (error) return error
+  try {
+    const { error } = await requireSuperadmin()
+    if (error) return error
 
-  const { id } = await params
-  const supabase = createAdminClient()
+    const { id } = await params
+    const supabase = createAdminClient()
 
-  const { data, error: dbError } = await supabase
-    .from('ai_agents')
-    .select(`
-      *,
-      department:agent_departments(id, name)
-    `)
-    .eq('id', id)
-    .single()
+    // Fetch base agent first
+    const { data: agent, error: agentError } = await supabase
+      .from('ai_agents')
+      .select('*')
+      .eq('id', id)
+      .single()
 
-  if (dbError || !data) {
-    return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
+    if (agentError || !agent) {
+      console.error('Agent fetch error:', agentError)
+      return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
+    }
+
+    // Fetch department separately
+    let department = null
+    if (agent.department_id) {
+      const { data } = await supabase
+        .from('agent_departments')
+        .select('id, name, icon')
+        .eq('id', agent.department_id)
+        .single()
+      department = data
+    }
+
+    // Fetch tools
+    const { data: toolAssignments } = await supabase
+      .from('ai_agent_tools')
+      .select('tool_id, config')
+      .eq('agent_id', id)
+
+    let tools: unknown[] = []
+    if (toolAssignments && toolAssignments.length > 0) {
+      const toolIds = toolAssignments.map(t => t.tool_id)
+      const { data: toolData } = await supabase
+        .from('agent_tools')
+        .select('id, name, description, category, input_schema, is_builtin')
+        .in('id', toolIds)
+
+      tools = toolAssignments.map(ta => ({
+        ...ta,
+        tool: toolData?.find(t => t.id === ta.tool_id)
+      }))
+    }
+
+    // Fetch skills
+    const { data: skillAssignments } = await supabase
+      .from('ai_agent_skills')
+      .select('skill_id')
+      .eq('agent_id', id)
+
+    let skills: unknown[] = []
+    if (skillAssignments && skillAssignments.length > 0) {
+      const skillIds = skillAssignments.map(s => s.skill_id)
+      const { data: skillData } = await supabase
+        .from('agent_skills')
+        .select('id, name, description, skill_content')
+        .in('id', skillIds)
+
+      skills = skillAssignments.map(sa => ({
+        ...sa,
+        skill: skillData?.find(s => s.id === sa.skill_id)
+      }))
+    }
+
+    // Fetch delegations
+    const { data: delegations } = await supabase
+      .from('agent_delegations')
+      .select('id, to_agent_id, condition, context_template')
+      .eq('from_agent_id', id)
+
+    // Add to_agent info for each delegation
+    if (delegations && delegations.length > 0) {
+      const toAgentIds = delegations.map(d => d.to_agent_id)
+      const { data: toAgents } = await supabase
+        .from('ai_agents')
+        .select('id, name, avatar_url')
+        .in('id', toAgentIds)
+
+      delegations.forEach((d: { to_agent_id: string; to_agent?: unknown }) => {
+        d.to_agent = toAgents?.find(a => a.id === d.to_agent_id)
+      })
+    }
+
+    // Fetch rules (if table exists)
+    let rules: unknown[] = []
+    try {
+      const { data: rulesData } = await supabase
+        .from('agent_rules')
+        .select('id, rule_type, rule_content, condition, priority, is_enabled')
+        .eq('agent_id', id)
+        .order('priority', { ascending: true })
+      rules = rulesData || []
+    } catch {
+      // Table might not exist yet
+    }
+
+    // Fetch prompt sections (if table exists)
+    let prompt_sections: unknown[] = []
+    try {
+      const { data: sectionsData } = await supabase
+        .from('agent_prompt_sections')
+        .select('id, section_type, section_title, section_content, position, is_enabled')
+        .eq('agent_id', id)
+        .order('position', { ascending: true })
+      prompt_sections = sectionsData || []
+    } catch {
+      // Table might not exist yet
+    }
+
+    // Fetch recent versions (if table exists)
+    let versions: unknown[] = []
+    try {
+      const { data: versionsData } = await supabase
+        .from('agent_versions')
+        .select('*')
+        .eq('agent_id', id)
+        .order('version', { ascending: false })
+        .limit(20)
+      versions = versionsData || []
+    } catch {
+      // Table might not exist yet
+    }
+
+    // Build the full agent object
+    const fullAgent = {
+      ...agent,
+      department,
+      tools,
+      skills,
+      delegations: delegations || [],
+      rules,
+      prompt_sections
+    }
+
+    // Generate SDK config
+    const sdkConfig = generateAgentSDKConfig(fullAgent)
+
+    return NextResponse.json({
+      agent: fullAgent,
+      versions,
+      sdkConfig
+    })
+  } catch (err) {
+    console.error('Agent GET error:', err)
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Internal server error' },
+      { status: 500 }
+    )
   }
-
-  return NextResponse.json({ agent: data })
 }
 
 // PATCH /api/admin/agents/[id] - Update agent

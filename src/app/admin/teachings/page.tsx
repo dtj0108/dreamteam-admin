@@ -48,7 +48,7 @@ import {
 } from 'lucide-react'
 import type { SkillTeaching, AgentSkill, LearnedRuleType } from '@/types/skills'
 
-interface TeachingWithSkill extends SkillTeaching {
+interface TeachingWithSkill extends Omit<SkillTeaching, 'skill'> {
   skill?: AgentSkill | null
 }
 

@@ -25,7 +25,7 @@ export async function GET(
   }
 
   // Get sample teachings
-  let sampleTeachings = []
+  let sampleTeachings: { id: string; original_output: string; corrected_output: string; created_at: string }[] = []
   if (pattern.sample_teaching_ids && pattern.sample_teaching_ids.length > 0) {
     const { data: teachings } = await supabase
       .from('skill_teachings')

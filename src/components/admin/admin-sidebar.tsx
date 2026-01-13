@@ -17,7 +17,8 @@ import {
   Wrench,
   BookOpen,
   GraduationCap,
-  Zap
+  Zap,
+  Calendar
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -36,6 +37,7 @@ const navItems = [
 
 const agentBuilderItems = [
   { href: '/admin/agents', label: 'Agents', icon: Bot },
+  { href: '/admin/scheduled-tasks', label: 'Scheduled Tasks', icon: Calendar },
   { href: '/admin/skills', label: 'Skills', icon: BookOpen },
   { href: '/admin/tools', label: 'Tools', icon: Wrench },
   { href: '/admin/mcp', label: 'MCP Integrations', icon: Plug },
