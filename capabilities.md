@@ -6351,3 +6351,748 @@ During the beta period:
 - Learn about [prompt caching](/docs/build/caching) to optimize repeated file analysis
 - Explore [batch processing](/docs/build/batch) for cost-effective bulk file processing
 - Check out [code execution](/docs/agents-and-tools/tool-use/code-execution-tool) to process files programmatically
+
+---
+
+# Search results
+
+Enable natural citations for RAG applications by providing search results with source attribution.
+
+---
+
+Search result content blocks enable natural citations with proper source attribution, bringing web search-quality citations to your custom applications. This feature is particularly powerful for RAG (Retrieval-Augmented Generation) applications where you need Claude to cite sources accurately.
+
+## Supported models
+
+The search results feature is available on:
+
+- Claude Opus 4.5 (`claude-opus-4-5-20251101`)
+- Claude Opus 4.1 (`claude-opus-4-1-20250805`)
+- Claude Opus 4 (`claude-opus-4-20250514`)
+- Claude Sonnet 4.5 (`claude-sonnet-4-5-20250929`)
+- Claude Sonnet 4 (`claude-sonnet-4-20250514`)
+- Claude Sonnet 3.7 (deprecated) (`claude-3-7-sonnet-20250219`)
+- Claude Haiku 4.5 (`claude-haiku-4-5-20251001`)
+- Claude Haiku 3.5 (deprecated) (`claude-3-5-haiku-20241022`)
+
+## Key benefits
+
+- **Natural citations** - Achieve the same citation quality as web search for any content
+- **Flexible integration** - Use in tool returns for dynamic RAG or as top-level content for pre-fetched data
+- **Proper source attribution** - Each result includes source and title information for clear attribution
+- **No document workarounds** - Eliminates the need for document-based workarounds
+- **Consistent format** - Matches the citation quality and format of Claude's web search functionality
+
+## How it works
+
+Search results can be provided in two ways:
+
+1. **From tool calls** - Custom tools return search results, enabling dynamic RAG applications
+2. **As top-level content** - Provide search results directly in user messages for pre-fetched or cached content
+
+In both cases, Claude automatically cites information from the search results with proper source attribution.
+
+## Search result schema
+
+Search results use the following structure:
+
+```json
+{
+  "type": "search_result",
+  "source": "https://example.com/article",
+  "title": "Article Title",
+  "content": [
+    {
+      "type": "text",
+      "text": "The actual content of the search result..."
+    }
+  ],
+  "citations": {
+    "enabled": true
+  }
+}
+```
+
+### Required fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Must be `"search_result"` |
+| `source` | string | The source URL or identifier for the content |
+| `title` | string | A descriptive title for the search result |
+| `content` | array | An array of text blocks containing the actual content |
+
+### Optional fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `citations` | object | Citation configuration with `enabled` boolean field |
+| `cache_control` | object | Cache control settings (e.g., `{"type": "ephemeral"}`) |
+
+Each item in the `content` array must have:
+- `type`: Must be `"text"`
+- `text`: The actual text content (non-empty string)
+
+## Method 1: Search results from tool calls
+
+The most powerful use case is returning search results from custom tools. This enables dynamic RAG applications where tools fetch and return relevant content with automatic citations.
+
+### Example: Knowledge base tool
+
+**Python:**
+```python
+from anthropic import Anthropic
+from anthropic.types import (
+    MessageParam,
+    TextBlockParam,
+    SearchResultBlockParam,
+    ToolResultBlockParam
+)
+
+client = Anthropic()
+
+# Define a knowledge base search tool
+knowledge_base_tool = {
+    "name": "search_knowledge_base",
+    "description": "Search the company knowledge base for information",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "The search query"
+            }
+        },
+        "required": ["query"]
+    }
+}
+
+# Function to handle the tool call
+def search_knowledge_base(query):
+    # Your search logic here
+    return [
+        SearchResultBlockParam(
+            type="search_result",
+            source="https://docs.company.com/product-guide",
+            title="Product Configuration Guide",
+            content=[
+                TextBlockParam(
+                    type="text",
+                    text="To configure the product, navigate to Settings > Configuration. The default timeout is 30 seconds, but can be adjusted between 10-120 seconds."
+                )
+            ],
+            citations={"enabled": True}
+        ),
+        SearchResultBlockParam(
+            type="search_result",
+            source="https://docs.company.com/troubleshooting",
+            title="Troubleshooting Guide",
+            content=[
+                TextBlockParam(
+                    type="text",
+                    text="If you encounter timeout errors, check the configuration settings. Common causes include network latency and incorrect timeout values."
+                )
+            ],
+            citations={"enabled": True}
+        )
+    ]
+
+# Create a message with the tool
+response = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    tools=[knowledge_base_tool],
+    messages=[
+        MessageParam(
+            role="user",
+            content="How do I configure the timeout settings?"
+        )
+    ]
+)
+
+# When Claude calls the tool, provide the search results
+if response.content[0].type == "tool_use":
+    tool_result = search_knowledge_base(response.content[0].input["query"])
+
+    final_response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=1024,
+        messages=[
+            MessageParam(role="user", content="How do I configure the timeout settings?"),
+            MessageParam(role="assistant", content=response.content),
+            MessageParam(
+                role="user",
+                content=[
+                    ToolResultBlockParam(
+                        type="tool_result",
+                        tool_use_id=response.content[0].id,
+                        content=tool_result
+                    )
+                ]
+            )
+        ]
+    )
+
+    print(final_response.content[0].text)
+```
+
+**TypeScript:**
+```typescript
+import { Anthropic } from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic();
+
+// Define a knowledge base search tool
+const knowledgeBaseTool = {
+  name: "search_knowledge_base",
+  description: "Search the company knowledge base for information",
+  input_schema: {
+    type: "object",
+    properties: {
+      query: {
+        type: "string",
+        description: "The search query"
+      }
+    },
+    required: ["query"]
+  }
+};
+
+// Function to handle the tool call
+function searchKnowledgeBase(query: string) {
+  return [
+    {
+      type: "search_result" as const,
+      source: "https://docs.company.com/product-guide",
+      title: "Product Configuration Guide",
+      content: [
+        {
+          type: "text" as const,
+          text: "To configure the product, navigate to Settings > Configuration. The default timeout is 30 seconds, but can be adjusted between 10-120 seconds."
+        }
+      ],
+      citations: { enabled: true }
+    },
+    {
+      type: "search_result" as const,
+      source: "https://docs.company.com/troubleshooting",
+      title: "Troubleshooting Guide",
+      content: [
+        {
+          type: "text" as const,
+          text: "If you encounter timeout errors, check the configuration settings. Common causes include network latency and incorrect timeout values."
+        }
+      ],
+      citations: { enabled: true }
+    }
+  ];
+}
+
+// Create a message with the tool
+const response = await anthropic.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  tools: [knowledgeBaseTool],
+  messages: [
+    {
+      role: "user",
+      content: "How do I configure the timeout settings?"
+    }
+  ]
+});
+
+// Handle tool use and provide results
+if (response.content[0].type === "tool_use") {
+  const toolResult = searchKnowledgeBase(response.content[0].input.query);
+
+  const finalResponse = await anthropic.messages.create({
+    model: "claude-sonnet-4-5",
+    max_tokens: 1024,
+    messages: [
+      { role: "user", content: "How do I configure the timeout settings?" },
+      { role: "assistant", content: response.content },
+      {
+        role: "user",
+        content: [
+          {
+            type: "tool_result" as const,
+            tool_use_id: response.content[0].id,
+            content: toolResult
+          }
+        ]
+      }
+    ]
+  });
+
+  console.log(finalResponse.content[0].text);
+}
+```
+
+**Shell:**
+```bash
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "tools": [{
+      "name": "search_knowledge_base",
+      "description": "Search the company knowledge base",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string", "description": "The search query"}
+        },
+        "required": ["query"]
+      }
+    }],
+    "messages": [{
+      "role": "user",
+      "content": "How do I configure the timeout settings?"
+    }]
+  }'
+```
+
+**Java:**
+```java
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.models.messages.Message;
+import com.anthropic.models.messages.MessageCreateParams;
+import com.anthropic.models.messages.MessageParam;
+import com.anthropic.models.messages.TextBlock;
+import com.anthropic.models.messages.Tool;
+import com.anthropic.models.messages.ToolUseBlock;
+import java.util.List;
+
+public class SearchRAG {
+  public static void main(String[] args) {
+    AnthropicClient client = AnthropicOkHttpClient.builder()
+        .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+        .build();
+
+    Tool searchTool = Tool.builder()
+        .name("search_knowledge_base")
+        .description("Search the company knowledge base")
+        .inputSchema(Tool.InputSchema.builder()
+            .type("object")
+            .properties(Map.of(
+                "query", Map.of("type", "string", "description", "The search query")
+            ))
+            .required(List.of("query"))
+            .build())
+        .build();
+
+    Message response = client.messages().create(MessageCreateParams.builder()
+        .model("claude-sonnet-4-5")
+        .maxTokens(1024)
+        .tools(List.of(searchTool))
+        .addMessage(MessageParam.userMessage("How do I configure the timeout settings?"))
+        .build());
+
+    System.out.println(response.getContent());
+  }
+}
+```
+
+## Method 2: Search results as top-level content
+
+Provide search results directly in user messages. This is useful for:
+- Pre-fetched content from your search infrastructure
+- Cached search results from previous queries
+- Content from external search services
+- Testing and development
+
+### Example: Direct search results
+
+**Python:**
+```python
+from anthropic import Anthropic
+from anthropic.types import (
+    MessageParam,
+    TextBlockParam,
+    SearchResultBlockParam
+)
+
+client = Anthropic()
+
+# Provide search results directly in the user message
+response = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    messages=[
+        MessageParam(
+            role="user",
+            content=[
+                SearchResultBlockParam(
+                    type="search_result",
+                    source="https://docs.company.com/api-reference",
+                    title="API Reference - Authentication",
+                    content=[
+                        TextBlockParam(
+                            type="text",
+                            text="All API requests must include an API key in the Authorization header. Keys can be generated from the dashboard. Rate limits: 1000 requests per hour for standard tier, 10000 for premium."
+                        )
+                    ],
+                    citations={"enabled": True}
+                ),
+                SearchResultBlockParam(
+                    type="search_result",
+                    source="https://docs.company.com/quickstart",
+                    title="Getting Started Guide",
+                    content=[
+                        TextBlockParam(
+                            type="text",
+                            text="To get started: 1) Sign up for an account, 2) Generate an API key from the dashboard, 3) Install our SDK, 4) Initialize the client with your API key."
+                        )
+                    ],
+                    citations={"enabled": True}
+                ),
+                TextBlockParam(
+                    type="text",
+                    text="Based on these search results, how do I authenticate API requests?"
+                )
+            ]
+        )
+    ]
+)
+
+print(response.content[0].text)
+```
+
+**TypeScript:**
+```typescript
+import { Anthropic } from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic();
+
+const response = await anthropic.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "search_result" as const,
+          source: "https://docs.company.com/api-reference",
+          title: "API Reference - Authentication",
+          content: [
+            {
+              type: "text" as const,
+              text: "All API requests must include an API key in the Authorization header. Keys can be generated from the dashboard. Rate limits: 1000 requests per hour for standard tier, 10000 for premium."
+            }
+          ],
+          citations: { enabled: true }
+        },
+        {
+          type: "search_result" as const,
+          source: "https://docs.company.com/quickstart",
+          title: "Getting Started Guide",
+          content: [
+            {
+              type: "text" as const,
+              text: "To get started: 1) Sign up for an account, 2) Generate an API key from the dashboard, 3) Install our SDK, 4) Initialize the client with your API key."
+            }
+          ],
+          citations: { enabled: true }
+        },
+        {
+          type: "text" as const,
+          text: "Based on these search results, how do I authenticate API requests?"
+        }
+      ]
+    }
+  ]
+});
+
+console.log(response.content[0].text);
+```
+
+**Shell:**
+```bash
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "search_result",
+            "source": "https://docs.company.com/api-reference",
+            "title": "API Reference - Authentication",
+            "content": [
+              {
+                "type": "text",
+                "text": "All API requests must include an API key in the Authorization header. Keys can be generated from the dashboard. Rate limits: 1000 requests per hour for standard tier, 10000 for premium."
+              }
+            ],
+            "citations": {"enabled": true}
+          },
+          {
+            "type": "search_result",
+            "source": "https://docs.company.com/quickstart",
+            "title": "Getting Started Guide",
+            "content": [
+              {
+                "type": "text",
+                "text": "To get started: 1) Sign up for an account, 2) Generate an API key from the dashboard, 3) Install our SDK, 4) Initialize the client with your API key."
+              }
+            ],
+            "citations": {"enabled": true}
+          },
+          {
+            "type": "text",
+            "text": "Based on these search results, how do I authenticate API requests?"
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**Java:**
+```java
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.models.messages.Message;
+import com.anthropic.models.messages.MessageCreateParams;
+import java.util.List;
+
+public class DirectSearchResults {
+  public static void main(String[] args) {
+    AnthropicClient client = AnthropicOkHttpClient.builder()
+        .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+        .build();
+
+    Message response = client.messages().create(MessageCreateParams.builder()
+        .model("claude-sonnet-4-5")
+        .maxTokens(1024)
+        .addMessage(MessageParam.userMessage(
+            // Search result content here
+        ))
+        .build());
+
+    System.out.println(response.getContent());
+  }
+}
+```
+
+## Claude's response with citations
+
+Regardless of how search results are provided, Claude automatically includes citations when using information from them:
+
+```json
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "To authenticate API requests, you need to include an API key in the Authorization header",
+      "citations": [
+        {
+          "type": "search_result_location",
+          "source": "https://docs.company.com/api-reference",
+          "title": "API Reference - Authentication",
+          "cited_text": "All API requests must include an API key in the Authorization header",
+          "search_result_index": 0,
+          "start_block_index": 0,
+          "end_block_index": 0
+        }
+      ]
+    },
+    {
+      "type": "text",
+      "text": ". You can generate API keys from your dashboard"
+    }
+  ]
+}
+```
+
+### Citation fields
+
+Each citation includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `type` | string | Always `"search_result_location"` for search result citations |
+| `source` | string | The source from the original search result |
+| `title` | string or null | The title from the original search result |
+| `cited_text` | string | The exact text being cited |
+| `search_result_index` | integer | Index of the search result (0-based) |
+| `start_block_index` | integer | Starting position in the content array |
+| `end_block_index` | integer | Ending position in the content array |
+
+## Advanced usage
+
+### Multiple content blocks
+
+Search results can contain multiple text blocks in the `content` array:
+
+```json
+{
+  "type": "search_result",
+  "source": "https://docs.company.com/api-guide",
+  "title": "API Documentation",
+  "content": [
+    {
+      "type": "text",
+      "text": "Authentication: All API requests require an API key."
+    },
+    {
+      "type": "text",
+      "text": "Rate Limits: The API allows 1000 requests per hour per key."
+    },
+    {
+      "type": "text",
+      "text": "Error Handling: The API returns standard HTTP status codes."
+    }
+  ]
+}
+```
+
+Claude can cite specific blocks using the `start_block_index` and `end_block_index` fields.
+
+### Combining both methods
+
+You can use both tool-based and top-level search results in the same conversation:
+
+```python
+# First message with top-level search results
+messages = [
+    MessageParam(
+        role="user",
+        content=[
+            SearchResultBlockParam(
+                type="search_result",
+                source="https://docs.company.com/overview",
+                title="Product Overview",
+                content=[
+                    TextBlockParam(type="text", text="Our product helps teams collaborate...")
+                ],
+                citations={"enabled": True}
+            ),
+            TextBlockParam(
+                type="text",
+                text="Tell me about this product and search for pricing information"
+            )
+        ]
+    )
+]
+
+# Claude might respond and call a tool to search for pricing
+# Then you provide tool results with more search results
+```
+
+### Cache control
+
+Add cache control for better performance:
+
+```json
+{
+  "type": "search_result",
+  "source": "https://docs.company.com/guide",
+  "title": "User Guide",
+  "content": [{"type": "text", "text": "..."}],
+  "cache_control": {
+    "type": "ephemeral"
+  }
+}
+```
+
+### Citation configuration
+
+By default, citations are disabled for search results. Enable them explicitly:
+
+```json
+{
+  "type": "search_result",
+  "source": "https://docs.company.com/guide",
+  "title": "User Guide",
+  "content": [{"type": "text", "text": "Important documentation..."}],
+  "citations": {
+    "enabled": true
+  }
+}
+```
+
+When `citations.enabled` is set to `true`, Claude will include citation references when using information from the search result. This enables:
+- Natural citations for custom RAG applications
+- Source attribution for proprietary knowledge bases
+- Web search-quality citations for custom tool returns
+
+Note: Citations are all-or-nothing. Either all search results in a request must have citations enabled, or all must have them disabled. Mixing different citation settings will result in an error.
+
+## Best practices
+
+### For tool-based search
+
+- **Dynamic content**: Use for real-time searches and dynamic RAG applications
+- **Error handling**: Return appropriate messages when searches fail
+- **Result limits**: Return only the most relevant results to avoid context overflow
+- **Structured responses**: Format results consistently for better citation quality
+
+### For top-level search
+
+- **Pre-fetched content**: Use when you already have search results from your infrastructure
+- **Batch processing**: Ideal for processing multiple search results at once
+- **Testing**: Great for testing citation behavior with known content
+
+### General best practices
+
+1. **Structure results effectively**
+   - Use clear, permanent source URLs
+   - Provide descriptive titles
+   - Break long content into logical text blocks
+
+2. **Maintain consistency**
+   - Use consistent source formats across your application
+   - Ensure titles accurately reflect content
+   - Keep formatting consistent
+
+3. **Handle errors gracefully**
+   ```python
+   def search_with_fallback(query):
+       try:
+           results = perform_search(query)
+           if not results:
+               return {"type": "text", "text": "No results found."}
+           return format_as_search_results(results)
+       except Exception as e:
+           return {"type": "text", "text": f"Search error: {str(e)}"}
+   ```
+
+## Limitations
+
+- Search result content blocks available on Claude API, Amazon Bedrock, and Google Vertex AI
+- Only text content is supported within search results (no images or other media)
+- The `content` array must contain at least one text block
+- Citations must be uniform: either all enabled or all disabled across search results in a request
+
+## Use cases
+
+**Custom knowledge bases**: Provide citations for proprietary documentation and internal resources
+
+**Document retrieval**: Create RAG applications that cite specific documents and sections
+
+**Search integration**: Return web search or custom search results with proper attribution
+
+**Research assistance**: Build tools that help users find and cite academic or technical resources
+
+**FAQ systems**: Provide accurate citations when answering questions from knowledge bases
+
+**Multi-source synthesis**: Combine information from multiple sources with clear attribution
+
+## Next steps
+
+- Learn about [tool use](/docs/build/tool-use) to create custom search tools
+- Explore [prompt caching](/docs/build/caching) to optimize repeated searches
+- Check out [batch processing](/docs/build/batch) for cost-effective bulk operations
+- Review [vision capabilities](/docs/build/vision) to enhance search results with image analysis
