@@ -4374,3 +4374,545 @@ Token counting is **free to use** but subject to requests per minute rate limits
 **Does token counting use prompt caching?**
 
 No, token counting provides an estimate without using caching logic. While you may provide `cache_control` blocks in your token counting request, prompt caching only occurs during actual message creation.
+
+---
+
+# Vision
+
+Claude's vision capabilities allow it to understand and analyze images, opening up exciting possibilities for multimodal interaction.
+
+This guide describes how to work with images in Claude, including best practices, code examples, and limitations to keep in mind.
+
+---
+
+## How to Use Vision
+
+Use Claude's vision capabilities via:
+
+- **claude.ai**: Upload an image like you would a file, or drag and drop an image directly into the chat window.
+- **Console Workbench**: A button to add images appears at the top right of every User message block.
+- **API request**: See the examples in this guide.
+
+---
+
+## Before You Upload
+
+### Basics and Limits
+
+You can include multiple images in a single request (up to 20 for claude.ai and 100 for API requests). Claude will analyze all provided images when formulating its response. This can be helpful for comparing or contrasting images.
+
+If you submit an image larger than 8000x8000 px, it will be rejected. If you submit more than 20 images in one API request, this limit is 2000x2000 px.
+
+**Note**: While the API supports 100 images per request, there is a 32MB request size limit for standard endpoints.
+
+### Evaluate Image Size
+
+For optimal performance, we recommend resizing images before uploading if they are too large. If your image's long edge is more than 1568 pixels, or your image is more than ~1,600 tokens, it will first be scaled down, preserving aspect ratio, until it's within the size limits.
+
+If your input image is too large and needs to be resized, it will increase latency without giving you any additional model performance. Very small images under 200 pixels on any given edge may degrade performance.
+
+**Recommendation**: Resize images to no more than 1.15 megapixels (and within 1568 pixels in both dimensions) to improve time-to-first-token.
+
+#### Maximum image sizes for common aspect ratios
+
+These images will not be resized and use approximately 1,600 tokens.
+
+| Aspect ratio | Image size   |
+| ------------ | ------------ |
+| 1:1          | 1092x1092 px |
+| 3:4          | 951x1268 px  |
+| 2:3          | 896x1344 px  |
+| 9:16         | 819x1456 px  |
+| 1:2          | 784x1568 px  |
+
+### Calculate Image Costs
+
+Each image you include in a request to Claude counts towards your token usage. If your image does not need to be resized, you can estimate the number of tokens using this algorithm: `tokens = (width px * height px)/750`
+
+**Example token usage and costs** (based on Claude Sonnet 4.5 at $3 per million input tokens):
+
+| Image size                    | # of Tokens | Cost / image | Cost / 1K images |
+| ----------------------------- | ----------- | ------------ | ---------------- |
+| 200x200 px (0.04 MP)          | ~54         | ~$0.00016    | ~$0.16           |
+| 1000x1000 px (1 MP)           | ~1334       | ~$0.004      | ~$4.00           |
+| 1092x1092 px (1.19 MP)        | ~1590       | ~$0.0048     | ~$4.80           |
+
+### Ensuring Image Quality
+
+When providing images to Claude, keep the following in mind for best results:
+
+- **Image format**: Use a supported image format: JPEG, PNG, GIF, or WebP.
+- **Image clarity**: Ensure images are clear and not too blurry or pixelated.
+- **Text**: If the image contains important text, make sure it's legible and not too small.
+
+---
+
+## Image Sources
+
+Claude supports three ways to provide images to the API:
+
+1. **Base64-encoded images**: Inline image data in requests
+2. **URL references**: Links to images hosted online
+3. **Files API**: Upload once, use multiple times
+
+---
+
+## Using Base64-Encoded Images
+
+**Python:**
+```python
+import anthropic
+import base64
+import httpx
+
+client = anthropic.Anthropic()
+
+# Fetch and encode image
+image_url = "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg"
+image_data = base64.standard_b64encode(httpx.get(image_url).content).decode("utf-8")
+
+# Send to Claude
+message = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/jpeg",
+                        "data": image_data,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "Describe this image."
+                }
+            ],
+        }
+    ],
+)
+print(message.content[0].text)
+```
+
+**TypeScript:**
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic();
+
+const message = await anthropic.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: "image/jpeg",
+            data: imageData, // Base64-encoded image data
+          }
+        },
+        {
+          type: "text",
+          text: "Describe this image."
+        }
+      ]
+    }
+  ]
+});
+
+console.log(message.content[0].type === 'text' ? message.content[0].text : '');
+```
+
+**Shell:**
+```bash
+BASE64_IMAGE_DATA=$(curl -s "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg" | base64)
+
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-5",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "image",
+            "source": {
+              "type": "base64",
+              "media_type": "image/jpeg",
+              "data": "'"$BASE64_IMAGE_DATA"'"
+            }
+          },
+          {
+            "type": "text",
+            "text": "Describe this image."
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**Java:**
+```java
+import java.util.List;
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.models.messages.*;
+
+public class VisionExample {
+    public static void main(String[] args) {
+        AnthropicClient client = AnthropicOkHttpClient.fromEnv();
+        String imageData = ""; // Base64-encoded image data
+
+        List<ContentBlockParam> contentBlockParams = List.of(
+            ContentBlockParam.ofImage(
+                ImageBlockParam.builder()
+                    .source(Base64ImageSource.builder()
+                        .data(imageData)
+                        .build())
+                    .build()
+            ),
+            ContentBlockParam.ofText(TextBlockParam.builder()
+                .text("Describe this image.")
+                .build())
+        );
+
+        Message message = client.messages().create(
+            MessageCreateParams.builder()
+                .model(Model.CLAUDE_SONNET_4_5_LATEST)
+                .maxTokens(1024)
+                .addUserMessageOfBlockParams(contentBlockParams)
+                .build()
+        );
+
+        System.out.println(message.content);
+    }
+}
+```
+
+---
+
+## Using URL-Based Images
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+message = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "Describe this image."
+                }
+            ],
+        }
+    ],
+)
+print(message.content[0].text)
+```
+
+**TypeScript:**
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic();
+
+const message = await anthropic.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "image",
+          source: {
+            type: "url",
+            url: "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg"
+          }
+        },
+        {
+          type: "text",
+          text: "Describe this image."
+        }
+      ]
+    }
+  ]
+});
+
+console.log(message.content[0].type === 'text' ? message.content[0].text : '');
+```
+
+---
+
+## Using the Files API
+
+For images you'll use repeatedly or when you want to avoid encoding overhead:
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+# Upload the image file
+with open("image.jpg", "rb") as f:
+    file_upload = client.beta.files.upload(file=("image.jpg", f, "image/jpeg"))
+
+# Use the uploaded file in a message
+message = client.beta.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    betas=["files-api-2025-04-14"],
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "file",
+                        "file_id": file_upload.id
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": "Describe this image."
+                }
+            ]
+        }
+    ],
+)
+
+print(message.content[0].text if message.content[0].type == 'text' else '')
+```
+
+**TypeScript:**
+```typescript
+import { Anthropic, toFile } from '@anthropic-ai/sdk';
+import fs from 'fs';
+
+const anthropic = new Anthropic();
+
+async function main() {
+  // Upload the image file
+  const fileUpload = await anthropic.beta.files.upload({
+    file: toFile(fs.createReadStream('image.jpg'), undefined, { type: "image/jpeg" })
+  }, {
+    headers: {
+      'anthropic-beta': 'files-api-2025-04-14'
+    }
+  });
+
+  // Use the uploaded file in a message
+  const response = await anthropic.beta.messages.create({
+    model: 'claude-sonnet-4-5',
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'file',
+              file_id: fileUpload.id
+            }
+          },
+          {
+            type: 'text',
+            text: 'Describe this image.'
+          }
+        ]
+      }
+    ]
+  }, {
+    headers: {
+      'anthropic-beta': 'files-api-2025-04-14'
+    }
+  });
+
+  console.log(response.content[0].type === 'text' ? response.content[0].text : '');
+}
+
+main();
+```
+
+---
+
+## Multiple Images
+
+To analyze multiple images, introduce each with descriptive labels and ask Claude to compare or contrast them:
+
+**Python:**
+```python
+message = client.messages.create(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Image 1:"
+                },
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "Image 2:"
+                },
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "url",
+                        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/Iridescent.green.sweat.bee1.jpg",
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "How are these images different?"
+                }
+            ],
+        }
+    ],
+)
+```
+
+**TypeScript:**
+```typescript
+const message = await anthropic.messages.create({
+  model: "claude-sonnet-4-5",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: "Image 1:"
+        },
+        {
+          type: "image",
+          source: {
+            type: "url",
+            url: "https://upload.wikimedia.org/wikipedia/commons/a/a7/Camponotus_flavomarginatus_ant.jpg"
+          }
+        },
+        {
+          type: "text",
+          text: "Image 2:"
+        },
+        {
+          type: "image",
+          source: {
+            type: "url",
+            url: "https://upload.wikimedia.org/wikipedia/commons/b/b5/Iridescent.green.sweat.bee1.jpg"
+          }
+        },
+        {
+          type: "text",
+          text: "How are these images different?"
+        }
+      ]
+    }
+  ]
+});
+```
+
+---
+
+## Limitations
+
+While Claude's image understanding capabilities are cutting-edge, there are some limitations to be aware of:
+
+- **People identification**: Claude cannot be used to identify (name) people in images and will refuse to do so.
+- **Accuracy**: Claude may hallucinate or make mistakes when interpreting low-quality, rotated, or very small images under 200 pixels.
+- **Spatial reasoning**: Claude's spatial reasoning abilities are limited. It may struggle with tasks requiring precise localization or layouts, like reading an analog clock face.
+- **Counting**: Claude can give approximate counts of objects but may not be precisely accurate, especially with large numbers of small objects.
+- **AI-generated images**: Claude does not know if an image is AI-generated and may be incorrect if asked. Do not rely on it to detect fake images.
+- **Inappropriate content**: Claude will not process inappropriate or explicit images that violate the Acceptable Use Policy.
+- **Healthcare applications**: While Claude can analyze general medical images, it is not designed to interpret complex diagnostic scans like CTs or MRIs.
+
+Always carefully review and verify Claude's image interpretations, especially for high-stakes use cases.
+
+---
+
+## FAQ
+
+**What image file types does Claude support?**
+
+Claude supports JPEG, PNG, GIF, and WebP image formats:
+- `image/jpeg`
+- `image/png`
+- `image/gif`
+- `image/webp`
+
+**Can Claude read image URLs?**
+
+Yes, Claude can process images from URLs. Use the "url" source type in your API requests:
+```json
+{
+  "type": "image",
+  "source": {
+    "type": "url",
+    "url": "https://example.com/image.jpg"
+  }
+}
+```
+
+**What are the image file size limits?**
+
+- API: Maximum 5MB per image
+- claude.ai: Maximum 10MB per image
+
+Images larger than these limits will be rejected.
+
+**How many images can I include in one request?**
+
+- Messages API: Up to 100 images per request
+- claude.ai: Up to 20 images per turn
+
+**Does Claude read image metadata?**
+
+No, Claude does not parse or receive any metadata from images passed to it.
+
+**Can I delete images I've uploaded?**
+
+No. Image uploads are ephemeral and not stored beyond the duration of the API request. Uploaded images are automatically deleted after processing.
+
+**Can Claude generate or edit images?**
+
+No, Claude is an image understanding model only. It can interpret and analyze images, but it cannot generate, produce, edit, manipulate, or create images.
