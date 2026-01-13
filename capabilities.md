@@ -4916,3 +4916,730 @@ No. Image uploads are ephemeral and not stored beyond the duration of the API re
 **Can Claude generate or edit images?**
 
 No, Claude is an image understanding model only. It can interpret and analyze images, but it cannot generate, produce, edit, manipulate, or create images.
+
+---
+
+# PDF support
+
+Process PDFs with Claude. Extract text, analyze charts, and understand visual content from your documents.
+
+---
+
+You can now ask Claude about any text, pictures, charts, and tables in PDFs you provide. Here's how to send PDFs to Claude:
+
+## PDF requirements and support
+
+**Supported platforms:**
+- Claude API
+- claude.ai (web)
+- Amazon Bedrock
+
+**Supported models:**
+- Claude 3.5 Sonnet
+- Claude 3 Opus
+- Claude 3 Sonnet
+- Claude 3 Haiku
+
+**PDF limitations:**
+- Maximum file size: 20 MB
+- Maximum pages: Typically 500+ pages, depending on file size
+- Maximum PDFs per request: Not restricted by Claude, but API request size limits apply
+- File format: Standard PDF files only (not encrypted or password-protected)
+
+## Amazon Bedrock specific notes
+
+If using Claude via Amazon Bedrock:
+- Use the `document` block type instead of `base64` for PDFs
+- Bedrock automatically handles PDF extraction and processing
+- Additional compliance considerations may apply depending on your AWS region
+
+## How to send PDFs to Claude
+
+### Method 1: Using a URL
+
+The simplest approach is to provide a publicly accessible URL to your PDF:
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+message = client.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "url",
+                        "url": "https://example.com/sample.pdf"
+                    }
+                },
+                {
+                    "type": "text",
+                    "text": "Can you summarize this document?"
+                }
+            ]
+        }
+    ]
+)
+
+print(message.content[0].text)
+```
+
+**TypeScript:**
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+
+const client = new Anthropic();
+
+const message = await client.messages.create({
+  model: "claude-3-5-sonnet-20241022",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "document",
+          source: {
+            type: "url",
+            url: "https://example.com/sample.pdf"
+          }
+        },
+        {
+          type: "text",
+          text: "Can you summarize this document?"
+        }
+      ]
+    }
+  ]
+});
+
+console.log(message.content[0].text);
+```
+
+**Shell:**
+```bash
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "document",
+            "source": {
+              "type": "url",
+              "url": "https://example.com/sample.pdf"
+            }
+          },
+          {
+            "type": "text",
+            "text": "Can you summarize this document?"
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**Java:**
+```java
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.models.messages.DocumentBlock;
+import com.anthropic.models.messages.DocumentBlockUrlSource;
+import com.anthropic.models.messages.Message;
+import com.anthropic.models.messages.MessageCreateParams;
+import com.anthropic.models.messages.MessageParam;
+import com.anthropic.models.messages.TextBlock;
+import com.anthropic.models.messages.TextBlockParam;
+import java.net.URL;
+
+public class PDFUrl {
+  public static void main(String[] args) {
+    AnthropicClient client = AnthropicOkHttpClient.builder()
+        .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+        .build();
+
+    Message message = client.messages().create(MessageCreateParams.builder()
+        .model("claude-3-5-sonnet-20241022")
+        .maxTokens(1024)
+        .addMessage(MessageParam.userMessage(Arrays.asList(
+          DocumentBlock.builder()
+              .source(DocumentBlockUrlSource.builder()
+                  .url(new URL("https://example.com/sample.pdf"))
+                  .build())
+              .build(),
+          TextBlockParam.of(TextBlock.builder()
+              .text("Can you summarize this document?")
+              .build())
+        )))
+        .build());
+
+    System.out.println(message.getContent().get(0));
+  }
+}
+```
+
+### Method 2: Base64 encoding
+
+For local files or when URLs aren't accessible, encode your PDF as base64:
+
+**Python:**
+```python
+import anthropic
+import base64
+
+client = anthropic.Anthropic()
+
+# Read and encode the PDF
+with open("sample.pdf", "rb") as pdf_file:
+    pdf_data = base64.standard_b64encode(pdf_file.read()).decode("utf-8")
+
+message = client.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_data,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "What are the key points from this document?"
+                }
+            ]
+        }
+    ]
+)
+
+print(message.content[0].text)
+```
+
+**TypeScript:**
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+import fs from "fs";
+
+const client = new Anthropic();
+
+const pdfData = fs.readFileSync("sample.pdf");
+const base64Pdf = pdfData.toString("base64");
+
+const message = await client.messages.create({
+  model: "claude-3-5-sonnet-20241022",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "document",
+          source: {
+            type: "base64",
+            media_type: "application/pdf",
+            data: base64Pdf
+          }
+        },
+        {
+          type: "text",
+          text: "What are the key points from this document?"
+        }
+      ]
+    }
+  ]
+});
+
+console.log(message.content[0].text);
+```
+
+**Shell:**
+```bash
+# Encode PDF to base64
+base64 sample.pdf > pdf.b64
+
+# Use the encoded content in your API call
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "document",
+            "source": {
+              "type": "base64",
+              "media_type": "application/pdf",
+              "data": "'$(cat pdf.b64)'"
+            }
+          },
+          {
+            "type": "text",
+            "text": "What are the key points from this document?"
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**Java:**
+```java
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.models.messages.DocumentBlock;
+import com.anthropic.models.messages.DocumentBlockBase64Source;
+import com.anthropic.models.messages.Message;
+import com.anthropic.models.messages.MessageCreateParams;
+import com.anthropic.models.messages.MessageParam;
+import com.anthropic.models.messages.TextBlock;
+import com.anthropic.models.messages.TextBlockParam;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.Base64;
+
+public class PDFBase64 {
+  public static void main(String[] args) throws Exception {
+    AnthropicClient client = AnthropicOkHttpClient.builder()
+        .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+        .build();
+
+    // Read and encode PDF
+    byte[] pdfBytes = Files.readAllBytes(Paths.get("sample.pdf"));
+    String base64Pdf = Base64.getEncoder().encodeToString(pdfBytes);
+
+    Message message = client.messages().create(MessageCreateParams.builder()
+        .model("claude-3-5-sonnet-20241022")
+        .maxTokens(1024)
+        .addMessage(MessageParam.userMessage(Arrays.asList(
+          DocumentBlock.builder()
+              .source(DocumentBlockBase64Source.builder()
+                  .mediaType("application/pdf")
+                  .data(base64Pdf)
+                  .build())
+              .build(),
+          TextBlockParam.of(TextBlock.builder()
+              .text("What are the key points from this document?")
+              .build())
+        )))
+        .build());
+
+    System.out.println(message.getContent().get(0));
+  }
+}
+```
+
+### Method 3: Using the Files API (recommended for production)
+
+The Files API is the recommended approach for production environments:
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+# Upload the PDF
+pdf_response = client.beta.files.upload(
+    file=open("sample.pdf", "rb"),
+)
+
+file_id = pdf_response.id
+
+# Use in messages
+message = client.beta.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    betas=["files-api-2025-04-14"],
+    max_tokens=1024,
+    messages=[
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "file",
+                        "file_id": file_id,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": "Please analyze this document."
+                }
+            ]
+        }
+    ]
+)
+
+print(message.content[0].text)
+
+# Clean up - delete the file when done
+client.beta.files.delete(file_id)
+```
+
+**TypeScript:**
+```typescript
+import Anthropic from "@anthropic-ai/sdk";
+import fs from "fs";
+
+const client = new Anthropic({
+  defaultHeaders: {
+    "anthropic-beta": "files-api-2025-04-14"
+  }
+});
+
+// Upload the PDF
+const pdfResponse = await client.beta.files.upload({
+  file: fs.createReadStream("sample.pdf")
+});
+
+const fileId = pdfResponse.id;
+
+// Use in messages
+const message = await client.beta.messages.create({
+  model: "claude-3-5-sonnet-20241022",
+  max_tokens: 1024,
+  messages: [
+    {
+      role: "user",
+      content: [
+        {
+          type: "document",
+          source: {
+            type: "file",
+            file_id: fileId
+          }
+        },
+        {
+          type: "text",
+          text: "Please analyze this document."
+        }
+      ]
+    }
+  ]
+});
+
+console.log(message.content[0].text);
+
+// Clean up
+await client.beta.files.delete(fileId);
+```
+
+**Shell:**
+```bash
+# Upload the file
+FILE_ID=$(curl -X POST https://api.anthropic.com/v1/files \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -F "file=@sample.pdf" | jq -r '.id')
+
+# Use in message request
+curl https://api.anthropic.com/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: files-api-2025-04-14" \
+  -H "content-type: application/json" \
+  -d '{
+    "model": "claude-3-5-sonnet-20241022",
+    "max_tokens": 1024,
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "document",
+            "source": {
+              "type": "file",
+              "file_id": "'$FILE_ID'"
+            }
+          },
+          {
+            "type": "text",
+            "text": "Please analyze this document."
+          }
+        ]
+      }
+    ]
+  }'
+
+# Clean up - delete the file
+curl -X DELETE https://api.anthropic.com/v1/files/$FILE_ID \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01"
+```
+
+**Java:**
+```java
+import com.anthropic.client.AnthropicClient;
+import com.anthropic.client.okhttp.AnthropicOkHttpClient;
+import com.anthropic.models.messages.DocumentBlock;
+import com.anthropic.models.messages.DocumentBlockFileSource;
+import com.anthropic.models.messages.Message;
+import com.anthropic.models.messages.MessageCreateParams;
+import com.anthropic.models.messages.MessageParam;
+import com.anthropic.models.messages.TextBlock;
+import com.anthropic.models.messages.TextBlockParam;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.Arrays;
+
+public class PDFFilesAPI {
+  public static void main(String[] args) throws Exception {
+    AnthropicClient client = AnthropicOkHttpClient.builder()
+        .apiKey(System.getenv("ANTHROPIC_API_KEY"))
+        .build();
+
+    // Upload the PDF
+    var uploadResponse = client.beta().files().upload(
+        BetaFileUploadParams.builder()
+            .file(Files.newInputStream(Paths.get("sample.pdf")))
+            .filename("sample.pdf")
+            .build()
+    );
+
+    String fileId = uploadResponse.getId();
+
+    // Use in message
+    Message message = client.beta().messages().create(
+        BetaMessageCreateParams.builder()
+            .model("claude-3-5-sonnet-20241022")
+            .maxTokens(1024)
+            .addMessage(MessageParam.userMessage(Arrays.asList(
+              DocumentBlock.builder()
+                  .source(DocumentBlockFileSource.builder()
+                      .fileId(fileId)
+                      .build())
+                  .build(),
+              TextBlockParam.of(TextBlock.builder()
+                  .text("Please analyze this document.")
+                  .build())
+            )))
+            .build()
+    );
+
+    System.out.println(message.getContent().get(0));
+
+    // Clean up
+    client.beta().files().delete(fileId);
+  }
+}
+```
+
+## How PDF support works
+
+When you send a PDF to Claude:
+
+1. **Extraction**: Claude extracts text, tables, and identifies images within the PDF
+2. **Processing**: All content is processed and analyzed by Claude's vision capabilities
+3. **Understanding**: Claude understands context between text and visual elements
+4. **Analysis**: Claude can answer questions about the entire document or specific sections
+
+## Example use cases
+
+**Document analysis:**
+- Summarize research papers or reports
+- Extract key information from financial documents
+- Analyze contracts and legal documents
+- Review technical specifications
+
+**Data extraction:**
+- Extract structured data from forms
+- Identify and list important details
+- Create summaries of multi-page documents
+- Find specific information within long documents
+
+**Visual content understanding:**
+- Analyze charts and graphs in documents
+- Understand diagrams and flowcharts
+- Interpret tables and structured data
+- Extract information from images embedded in PDFs
+
+**Research and learning:**
+- Ask questions about course materials
+- Summarize academic papers
+- Extract citations and references
+- Understand complex visual explanations
+
+## Cost estimation
+
+PDF processing costs the same as standard messages. Token usage includes:
+- The text content extracted from the PDF
+- Visual content analysis (if your prompt asks about charts, images, etc.)
+- Your text prompt
+
+For cost estimates:
+- A typical 10-page document might be 3,000-5,000 tokens
+- A dense technical document might be 5,000-10,000 tokens
+- Use the token counting API to estimate costs before processing large batches
+
+## Optimization strategies
+
+### 1. Be specific in your requests
+
+Instead of:
+```
+"Summarize this document"
+```
+
+Try:
+```
+"Summarize this document in 3 bullet points, focusing on financial impacts"
+```
+
+### 2. Use multiple requests for different analyses
+
+Rather than asking for everything at once, break complex analysis into focused requests to avoid exceeding token limits and reduce costs.
+
+### 3. Extract first, then analyze
+
+For large documents, consider extracting key sections first, then doing deeper analysis on specific parts.
+
+### 4. Combine with prompt caching
+
+For documents you process repeatedly, use prompt caching to avoid reprocessing:
+
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+pdf_response = client.beta.files.upload(
+    file=open("large_document.pdf", "rb"),
+)
+
+message = client.messages.create(
+    model="claude-3-5-sonnet-20241022",
+    max_tokens=1024,
+    system=[
+        {
+            "type": "text",
+            "text": "You are a document analyst specialized in extracting insights.",
+        },
+        {
+            "type": "document",
+            "source": {
+                "type": "file",
+                "file_id": pdf_response.id,
+            },
+            "cache_control": {"type": "ephemeral"}
+        }
+    ],
+    messages=[
+        {
+            "role": "user",
+            "content": "What are the key findings?"
+        }
+    ]
+)
+
+print(message.content[0].text)
+```
+
+### 5. Use batch processing for multiple documents
+
+For processing multiple PDFs, use the Batch API for 50% cost savings:
+
+```python
+import anthropic
+import json
+
+client = anthropic.Anthropic()
+
+# Prepare batch requests for multiple PDFs
+requests = []
+
+for pdf_file in ["document1.pdf", "document2.pdf", "document3.pdf"]:
+    pdf_response = client.beta.files.upload(file=open(pdf_file, "rb"))
+
+    requests.append({
+        "custom_id": f"pdf_{pdf_file}",
+        "params": {
+            "model": "claude-3-5-sonnet-20241022",
+            "max_tokens": 1024,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "file",
+                                "file_id": pdf_response.id
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": "Summarize this document in 5 sentences."
+                        }
+                    ]
+                }
+            ]
+        }
+    })
+
+# Submit batch
+batch_response = client.beta.messages.batches.create(requests=requests)
+print(f"Batch ID: {batch_response.id}")
+```
+
+## Common questions
+
+**Can Claude process encrypted PDFs?**
+
+No, Claude cannot process encrypted or password-protected PDFs. Remove encryption before sending.
+
+**What if my PDF has unusual formatting?**
+
+Claude handles most PDF formats well, but scanned PDFs (images of text) are processed as images. For best results with scanned documents:
+- Use high-resolution scans (300+ DPI)
+- Ask specific questions rather than open-ended requests
+- Consider OCR processing for very low quality scans
+
+**Can I process PDFs with forms?**
+
+Yes, Claude can analyze form PDFs and extract information from filled forms or help you understand form requirements.
+
+**How long does PDF processing take?**
+
+PDF processing time depends on file size and complexity. Typical processing times:
+- Small documents (1-5 pages): <1 second
+- Medium documents (5-20 pages): 1-3 seconds
+- Large documents (20+ pages): 3-10+ seconds
+
+**Are there limits on PDF complexity?**
+
+While there's no hard limit on complexity, extremely complex PDFs with unusual formatting may be processed less accurately. For best results:
+- Use standard PDF creation tools
+- Avoid highly compressed or malformed PDFs
+- Test with sample sections first for new document types
+
+## Next steps
+
+- Check out the [Files API documentation](/docs/build/files) for production file handling
+- Learn about [prompt caching](/docs/build/caching) to optimize repeated PDF analysis
+- Explore [batch processing](/docs/build/batch) for cost-effective bulk document analysis
+- Review [vision capabilities](/docs/build/vision) for advanced image and chart understanding
