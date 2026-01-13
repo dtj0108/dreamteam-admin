@@ -1741,3 +1741,329 @@ For best performance on complex reasoning tasks, use high effort (the default) w
 2. **Use low for speed-sensitive or simple tasks**: When latency matters or tasks are straightforward, low effort can significantly reduce response times and costs.
 3. **Test your use case**: The impact of effort levels varies by task type. Evaluate performance on your specific use cases before deploying.
 4. **Consider dynamic effort**: Adjust effort based on task complexity. Simple queries may warrant low effort while agentic coding and complex reasoning benefit from high effort.
+
+---
+
+# Streaming Messages
+
+When creating a Message, you can set `"stream": true` to incrementally stream the response using server-sent events (SSE).
+
+## Streaming with SDKs
+
+The Python and TypeScript SDKs offer multiple ways of streaming. The Python SDK allows both sync and async streams.
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+with client.messages.stream(
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Hello"}],
+    model="claude-sonnet-4-5",
+) as stream:
+  for text in stream.text_stream:
+      print(text, end="", flush=True)
+```
+
+**TypeScript:**
+```typescript
+import Anthropic from '@anthropic-ai/sdk';
+
+const client = new Anthropic();
+
+await client.messages.stream({
+    messages: [{role: 'user', content: "Hello"}],
+    model: 'claude-sonnet-4-5',
+    max_tokens: 1024,
+}).on('text', (text) => {
+    console.log(text);
+});
+```
+
+## Event types
+
+Each server-sent event includes a named event type and associated JSON data. Each event will use an SSE event name (e.g. `event: message_stop`), and include the matching event `type` in its data.
+
+Each stream uses the following event flow:
+
+1. `message_start`: contains a Message object with empty `content`.
+2. A series of content blocks, each of which have a `content_block_start`, one or more `content_block_delta` events, and a `content_block_stop` event.
+3. One or more `message_delta` events, indicating top-level changes to the final Message object.
+4. A final `message_stop` event.
+
+The token counts shown in the `usage` field of the `message_delta` event are **cumulative**.
+
+### Ping events
+
+Event streams may also include any number of `ping` events.
+
+### Error events
+
+Errors may occasionally be sent in the event stream. For example, during periods of high usage, you may receive an `overloaded_error`:
+
+```json
+event: error
+data: {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+```
+
+## Content block delta types
+
+Each `content_block_delta` event contains a `delta` that updates the `content` block at a given `index`.
+
+### Text delta
+
+A `text` content block delta looks like:
+
+```json
+event: content_block_delta
+data: {"type": "content_block_delta","index": 0,"delta": {"type": "text_delta", "text": "ello frien"}}
+```
+
+### Input JSON delta
+
+The deltas for `tool_use` content blocks correspond to updates for the `input` field. The deltas are **partial JSON strings**, whereas the final `tool_use.input` is always an **object**.
+
+You can accumulate the string deltas and parse the JSON once you receive a `content_block_stop` event.
+
+A `tool_use` content block delta looks like:
+
+```json
+event: content_block_delta
+data: {"type": "content_block_delta","index": 1,"delta": {"type": "input_json_delta","partial_json": "{\"location\": \"San Fra"}}
+```
+
+### Thinking delta
+
+When using extended thinking with streaming enabled, you'll receive thinking content via `thinking_delta` events. These deltas correspond to the `thinking` field of the `thinking` content blocks.
+
+For thinking content, a special `signature_delta` event is sent just before the `content_block_stop` event.
+
+A typical thinking delta looks like:
+
+```json
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Let me solve this step by step:\n\n1. First break down 27 * 453"}}
+```
+
+## Basic streaming request
+
+**Shell:**
+```bash
+curl https://api.anthropic.com/v1/messages \
+     --header "anthropic-version: 2023-06-01" \
+     --header "content-type: application/json" \
+     --header "x-api-key: $ANTHROPIC_API_KEY" \
+     --data \
+'{
+  "model": "claude-sonnet-4-5",
+  "messages": [{"role": "user", "content": "Hello"}],
+  "max_tokens": 256,
+  "stream": true
+}'
+```
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+with client.messages.stream(
+    model="claude-sonnet-4-5",
+    messages=[{"role": "user", "content": "Hello"}],
+    max_tokens=256,
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+```
+
+### Response example
+
+```json
+event: message_start
+data: {"type": "message_start", "message": {"id": "msg_1nZdL29xx5MUA1yADyHTEsnR8uuvGzszyY", "type": "message", "role": "assistant", "content": [], "model": "claude-sonnet-4-5-20250929", "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 25, "output_tokens": 1}}}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "!"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 0}
+
+event: message_delta
+data: {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence":null}, "usage": {"output_tokens": 15}}
+
+event: message_stop
+data: {"type": "message_stop"}
+```
+
+## Streaming with tool use
+
+In this request, Claude uses a tool to provide information:
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+tools = [
+    {
+        "name": "get_weather",
+        "description": "Get the current weather in a given location",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "The city and state, e.g. San Francisco, CA"
+                }
+            },
+            "required": ["location"]
+        }
+    }
+]
+
+with client.messages.stream(
+    model="claude-sonnet-4-5",
+    max_tokens=1024,
+    tools=tools,
+    tool_choice={"type": "any"},
+    messages=[
+        {
+            "role": "user",
+            "content": "What is the weather like in San Francisco?"
+        }
+    ],
+) as stream:
+    for text in stream.text_stream:
+        print(text, end="", flush=True)
+```
+
+The streaming response includes both text and tool_use content blocks:
+
+```json
+event: message_start
+data: {"type":"message_start","message":{"id":"msg_014p7gG3wDgGV9EUtLvnow3U","type":"message","role":"assistant","model":"claude-sonnet-4-5-20250929","content":[]}}
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Let me check the weather for San Francisco:"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0}
+
+event: content_block_start
+data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01T1x1fJ34qAmk2tNTrN7Up6","name":"get_weather","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"location\": \"San Francisco, CA\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":1}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+```
+
+## Streaming with extended thinking
+
+When extended thinking is enabled, you'll receive thinking blocks streamed as separate content:
+
+**Python:**
+```python
+import anthropic
+
+client = anthropic.Anthropic()
+
+with client.messages.stream(
+    model="claude-sonnet-4-5",
+    max_tokens=20000,
+    thinking={
+        "type": "enabled",
+        "budget_tokens": 16000
+    },
+    messages=[
+        {
+            "role": "user",
+            "content": "What is 27 * 453?"
+        }
+    ],
+) as stream:
+    for event in stream:
+        if event.type == "content_block_delta":
+            if event.delta.type == "thinking_delta":
+                print(event.delta.thinking, end="", flush=True)
+            elif event.delta.type == "text_delta":
+                print(event.delta.text, end="", flush=True)
+```
+
+### Response example
+
+```json
+event: message_start
+data: {"type": "message_start", "message": {"id": "msg_01...", "type": "message", "role": "assistant", "content": []}}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 0, "content_block": {"type": "thinking", "thinking": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "Let me solve this step by step:\n\n1. First break down 27 * 453"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "\n2. 453 = 400 + 50 + 3"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "thinking_delta", "thinking": "\n3. 27 * 400 = 10,800"}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 0, "delta": {"type": "signature_delta", "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds..."}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 0}
+
+event: content_block_start
+data: {"type": "content_block_start", "index": 1, "content_block": {"type": "text", "text": ""}}
+
+event: content_block_delta
+data: {"type": "content_block_delta", "index": 1, "delta": {"type": "text_delta", "text": "27 * 453 = 12,231"}}
+
+event: content_block_stop
+data: {"type": "content_block_stop", "index": 1}
+
+event: message_delta
+data: {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+
+event: message_stop
+data: {"type": "message_stop"}
+```
+
+## Error recovery
+
+When a streaming request is interrupted due to network issues, timeouts, or other errors, you can recover by resuming from where the stream was interrupted.
+
+The basic recovery strategy involves:
+
+1. **Capture the partial response**: Save all content that was successfully received before the error occurred
+2. **Construct a continuation request**: Create a new API request that includes the partial assistant response as the beginning of a new assistant message
+3. **Resume streaming**: Continue receiving the rest of the response from where it was interrupted
+
+### Error recovery best practices
+
+1. **Use SDK features**: Leverage the SDK's built-in message accumulation and error handling capabilities
+2. **Handle content types**: Be aware that messages can contain multiple content blocks (`text`, `tool_use`, `thinking`). Tool use and extended thinking blocks cannot be partially recovered. You can resume streaming from the most recent text block.
