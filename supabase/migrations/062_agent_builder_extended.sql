@@ -240,10 +240,10 @@ BEGIN
 
   -- Map model to SDK model name
   v_model_name := CASE v_agent.model
-    WHEN 'sonnet' THEN 'claude-sonnet-4-20250514'
-    WHEN 'opus' THEN 'claude-opus-4-20250514'
-    WHEN 'haiku' THEN 'claude-3-5-haiku-20241022'
-    ELSE 'claude-sonnet-4-20250514'
+    WHEN 'sonnet' THEN 'claude-sonnet-4-5-20250929'
+    WHEN 'opus' THEN 'claude-opus-4-5-20251101'
+    WHEN 'haiku' THEN 'claude-haiku-4-5-20251001'
+    ELSE 'claude-sonnet-4-5-20250929'
   END;
 
   -- Get assigned tools

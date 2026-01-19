@@ -21,6 +21,7 @@ export interface Agent {
   is_enabled: boolean
   is_head: boolean
   config: Record<string, unknown>
+  plan_id: string | null
   current_version: number
   published_version: number | null
   created_at: string
@@ -31,6 +32,7 @@ export interface AgentWithRelations extends Agent {
   department?: AgentDepartment | null
   tools?: AgentToolAssignment[]
   skills?: AgentSkillAssignment[]
+  mind?: AgentMindAssignment[]
   delegations?: AgentDelegation[]
   rules?: AgentRule[]
   prompt_sections?: AgentPromptSection[]
@@ -87,6 +89,61 @@ export interface AgentSkillAssignment {
     skill_content: string
     triggers?: unknown
   }
+}
+
+// ============================================
+// MIND TYPES
+// ============================================
+
+export type MindCategory =
+  | 'finance'
+  | 'crm'
+  | 'team'
+  | 'projects'
+  | 'knowledge'
+  | 'communications'
+  | 'goals'
+  | 'shared'
+
+export type MindContentType =
+  | 'responsibilities'
+  | 'workflows'
+  | 'policies'
+  | 'metrics'
+  | 'examples'
+  | 'general'
+
+export type MindScope = 'agent' | 'department' | 'company'
+
+export interface AgentMind {
+  id: string
+  name: string
+  slug: string
+  description: string | null
+  category: MindCategory
+  content: string
+  content_type: MindContentType
+  position: number
+  is_enabled: boolean
+  workspace_id: string | null
+  is_system: boolean
+  scope: MindScope
+  department_id: string | null
+}
+
+export interface AgentMindAssignment {
+  agent_id: string
+  mind_id: string
+  position_override: number | null
+  mind?: AgentMind
+}
+
+export interface SDKMind {
+  name: string
+  slug: string
+  category: MindCategory
+  contentType: MindContentType
+  content: string
 }
 
 // ============================================
@@ -258,9 +315,9 @@ export interface AgentSDKConfig {
 }
 
 export type SDKModelName =
-  | 'claude-sonnet-4-20250514'
-  | 'claude-opus-4-20250514'
-  | 'claude-3-5-haiku-20241022'
+  | 'claude-sonnet-4-5-20250929'
+  | 'claude-opus-4-5-20251101'
+  | 'claude-haiku-4-5-20251001'
 
 export interface SDKTool {
   name: string
@@ -325,6 +382,7 @@ export interface UpdateAgentRequest {
   max_turns?: number
   is_enabled?: boolean
   is_head?: boolean
+  plan_id?: string | null
 }
 
 export interface UpdateAgentToolsRequest {
@@ -432,15 +490,15 @@ export interface TestMessageResponse {
 // ============================================
 
 export const MODEL_DISPLAY_NAMES: Record<AgentModel, string> = {
-  haiku: 'Claude 3.5 Haiku',
-  sonnet: 'Claude Sonnet 4',
-  opus: 'Claude Opus 4'
+  haiku: 'Claude Haiku 4.5',
+  sonnet: 'Claude Sonnet 4.5',
+  opus: 'Claude Opus 4.5'
 }
 
 export const MODEL_SDK_NAMES: Record<AgentModel, SDKModelName> = {
-  haiku: 'claude-3-5-haiku-20241022',
-  sonnet: 'claude-sonnet-4-20250514',
-  opus: 'claude-opus-4-20250514'
+  haiku: 'claude-haiku-4-5-20251001',
+  sonnet: 'claude-sonnet-4-5-20250929',
+  opus: 'claude-opus-4-5-20251101'
 }
 
 export const RULE_TYPE_LABELS: Record<RuleType, string> = {

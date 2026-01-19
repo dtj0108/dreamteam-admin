@@ -18,7 +18,8 @@ import {
   BookOpen,
   GraduationCap,
   Zap,
-  Calendar
+  Calendar,
+  FileText
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -39,6 +40,7 @@ const agentBuilderItems = [
   { href: '/admin/agents', label: 'Agents', icon: Bot },
   { href: '/admin/scheduled-tasks', label: 'Scheduled Tasks', icon: Calendar },
   { href: '/admin/skills', label: 'Skills', icon: BookOpen },
+  { href: '/admin/mind', label: 'Mind', icon: FileText },
   { href: '/admin/tools', label: 'Tools', icon: Wrench },
   { href: '/admin/mcp', label: 'MCP Integrations', icon: Plug },
   { href: '/admin/teachings', label: 'Teachings', icon: GraduationCap },

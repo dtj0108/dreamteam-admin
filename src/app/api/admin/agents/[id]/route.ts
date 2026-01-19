@@ -78,6 +78,32 @@ export async function GET(
       }))
     }
 
+  // Fetch mind
+  let mind: unknown[] = []
+  try {
+    const { data: mindAssignments } = await supabase
+      .from('ai_agent_mind')
+      .select('mind_id, position_override')
+      .eq('agent_id', id)
+
+    if (mindAssignments && mindAssignments.length > 0) {
+      const mindIds = mindAssignments.map(m => m.mind_id)
+      const { data: mindData } = await supabase
+        .from('agent_mind')
+        .select('id, name, slug, description, category, content, content_type, position, is_enabled')
+        .in('id', mindIds)
+
+      mind = mindAssignments.map(ma => ({
+        agent_id: id,
+        mind_id: ma.mind_id,
+        position_override: ma.position_override,
+        mind: mindData?.find(m => m.id === ma.mind_id)
+      }))
+    }
+  } catch {
+    // Table might not exist yet
+  }
+
     // Fetch delegations
     const { data: delegations } = await supabase
       .from('agent_delegations')
@@ -143,6 +169,7 @@ export async function GET(
       department,
       tools,
       skills,
+    mind,
       delegations: delegations || [],
       rules,
       prompt_sections
@@ -179,7 +206,7 @@ export async function PATCH(
   const allowedFields = [
     'name', 'description', 'department_id', 'avatar_url', 'model',
     'system_prompt', 'permission_mode', 'max_turns', 'is_enabled',
-    'is_head', 'config'
+    'is_head', 'config', 'plan_id'
   ]
   const updates: Record<string, unknown> = {}
 

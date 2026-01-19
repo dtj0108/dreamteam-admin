@@ -191,9 +191,9 @@ export default function AgentsPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="haiku">Claude 3.5 Haiku (Fast)</SelectItem>
-                    <SelectItem value="sonnet">Claude Sonnet 4 (Balanced)</SelectItem>
-                    <SelectItem value="opus">Claude Opus 4 (Most Capable)</SelectItem>
+                    <SelectItem value="haiku">Claude Haiku 4.5 (Fast)</SelectItem>
+                    <SelectItem value="sonnet">Claude Sonnet 4.5 (Balanced)</SelectItem>
+                    <SelectItem value="opus">Claude Opus 4.5 (Most Capable)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
