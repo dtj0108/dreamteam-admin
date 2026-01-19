@@ -20,6 +20,8 @@ export interface Agent {
   max_turns: number
   is_enabled: boolean
   is_head: boolean
+  is_system: boolean
+  workspace_id: string | null
   config: Record<string, unknown>
   plan_id: string | null
   current_version: number
@@ -309,6 +311,7 @@ export interface AgentSDKConfig {
   skills?: SDKSkill[]
   rules?: SDKRule[]
   promptSections?: SDKPromptSection[]
+  mind?: SDKMind[]
   delegations?: SDKDelegation[]
   isHead?: boolean
   departmentId?: string
