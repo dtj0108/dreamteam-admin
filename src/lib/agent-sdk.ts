@@ -10,16 +10,18 @@ import type {
   SDKRule,
   SDKPromptSection,
   SDKDelegation,
+  SDKMind,
   AgentModel,
   RuleType,
-  PromptSectionType
+  PromptSectionType,
+  MindContentType
 } from '@/types/agents'
 
 // Model name mapping
 const MODEL_MAP: Record<AgentModel, SDKModelName> = {
-  haiku: 'claude-3-5-haiku-20241022',
-  sonnet: 'claude-sonnet-4-20250514',
-  opus: 'claude-opus-4-20250514'
+  haiku: 'claude-haiku-4-5-20251001',
+  sonnet: 'claude-sonnet-4-5-20250929',
+  opus: 'claude-opus-4-5-20251101'
 }
 
 /**
@@ -76,10 +78,27 @@ export function generateAgentSDKConfig(agent: AgentWithRelations): AgentSDKConfi
       contextTemplate: d.context_template || undefined
     }))
 
+  // Map mind to SDK format
+  const mind: SDKMind[] = (agent.mind || [])
+    .filter(m => m.mind && m.mind.is_enabled)
+    .sort((a, b) => {
+      const posA = a.position_override ?? a.mind?.position ?? 0
+      const posB = b.position_override ?? b.mind?.position ?? 0
+      return posA - posB
+    })
+    .map(m => ({
+      name: m.mind!.name,
+      slug: m.mind!.slug,
+      category: m.mind!.category,
+      contentType: m.mind!.content_type,
+      content: m.mind!.content
+    }))
+
   // Compile the full system prompt
   const compiledPrompt = compileSystemPrompt(
     agent.system_prompt,
     promptSections,
+    mind,
     skills,
     rules
   )
@@ -96,6 +115,7 @@ export function generateAgentSDKConfig(agent: AgentWithRelations): AgentSDKConfi
     skills: skills.length > 0 ? skills : undefined,
     rules: rules.length > 0 ? rules : undefined,
     promptSections: promptSections.length > 0 ? promptSections : undefined,
+    mind: mind.length > 0 ? mind : undefined,
     delegations: delegations.length > 0 ? delegations : undefined,
     isHead: agent.is_head || undefined,
     departmentId: agent.department_id || undefined
@@ -108,6 +128,7 @@ export function generateAgentSDKConfig(agent: AgentWithRelations): AgentSDKConfi
 function compileSystemPrompt(
   basePrompt: string,
   sections: SDKPromptSection[],
+  mind: SDKMind[],
   skills: SDKSkill[],
   rules: SDKRule[]
 ): string {
@@ -120,6 +141,37 @@ function compileSystemPrompt(
     }
   } else if (basePrompt) {
     parts.push(basePrompt)
+  }
+
+  // Add mind organized by content type
+  if (mind.length > 0) {
+    parts.push('\n## Mind')
+
+    const contentTypeLabels: Record<MindContentType, string> = {
+      responsibilities: 'Responsibilities',
+      workflows: 'Workflows',
+      policies: 'Policies',
+      metrics: 'Metrics',
+      examples: 'Examples',
+      general: 'General'
+    }
+
+    const mindByType = mind.reduce((acc, m) => {
+      const type = m.contentType
+      if (!acc[type]) acc[type] = []
+      acc[type].push(m)
+      return acc
+    }, {} as Record<MindContentType, SDKMind[]>)
+
+    for (const [type, items] of Object.entries(mindByType)) {
+      if (items.length > 0) {
+        parts.push(`\n### ${contentTypeLabels[type as MindContentType]}`)
+        for (const item of items) {
+          parts.push(`\n#### ${item.name}`)
+          parts.push(item.content)
+        }
+      }
+    }
   }
 
   // Add skills as instructions

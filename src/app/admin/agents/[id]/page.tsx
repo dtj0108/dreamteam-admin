@@ -75,7 +75,12 @@ import {
   Clock,
   CheckCircle,
   XCircle,
-  AlertCircle
+  AlertCircle,
+  Brain,
+  Building2,
+  Building,
+  Sparkles,
+  Lock
 } from 'lucide-react'
 import type {
   AgentWithRelations,
@@ -97,9 +102,9 @@ import { SCHEDULE_PRESETS, EXECUTION_STATUS_LABELS } from '@/types/agents'
 import { describeCron } from '@/lib/cron-utils'
 
 const MODEL_OPTIONS: { value: AgentModel; label: string }[] = [
-  { value: 'haiku', label: 'Claude 3.5 Haiku (Fast)' },
-  { value: 'sonnet', label: 'Claude Sonnet 4 (Balanced)' },
-  { value: 'opus', label: 'Claude Opus 4 (Most Capable)' }
+  { value: 'haiku', label: 'Claude Haiku 4.5 (Fast)' },
+  { value: 'sonnet', label: 'Claude Sonnet 4.5 (Balanced)' },
+  { value: 'opus', label: 'Claude Opus 4.5 (Most Capable)' }
 ]
 
 const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string; description: string }[] = [
@@ -128,6 +133,70 @@ const TOOL_CATEGORIES = [
   'finance', 'crm', 'team', 'projects', 'knowledge', 'communications', 'goals', 'agents'
 ] as const
 
+type MindScope = 'agent' | 'department' | 'company'
+
+interface AgentMindFile {
+  id: string
+  name: string
+  slug: string
+  description: string | null
+  category: string
+  content: string
+  content_type: string
+  position: number
+  is_enabled: boolean
+  workspace_id: string | null
+  is_system: boolean
+  scope: MindScope
+  department_id: string | null
+}
+
+interface AgentMindAssignment {
+  mind_id: string
+  position_override: number | null
+  mind: AgentMindFile
+}
+
+interface AgentLearning {
+  id: string
+  title: string
+  insight: string
+  confidence_score: number
+  scope: MindScope
+  agent_id: string | null
+  department_id: string | null
+}
+
+const MIND_CATEGORIES = [
+  'finance', 'crm', 'team', 'projects', 'knowledge', 'communications', 'goals', 'shared'
+] as const
+
+const MIND_CATEGORY_LABELS: Record<string, string> = {
+  finance: 'Finance',
+  crm: 'CRM',
+  team: 'Team',
+  projects: 'Projects',
+  knowledge: 'Knowledge',
+  communications: 'Communications',
+  goals: 'Goals',
+  shared: 'Shared'
+}
+
+const MIND_CONTENT_TYPE_LABELS: Record<string, string> = {
+  responsibilities: 'Responsibilities',
+  workflows: 'Workflows',
+  policies: 'Policies',
+  metrics: 'Metrics',
+  examples: 'Examples',
+  general: 'General'
+}
+
+const MIND_SCOPE_LABELS: Record<MindScope, string> = {
+  company: 'Company',
+  department: 'Department',
+  agent: 'Agent'
+}
+
 export default function AgentBuilderPage() {
   const router = useRouter()
   const params = useParams()
@@ -146,6 +215,8 @@ export default function AgentBuilderPage() {
   const [allTools, setAllTools] = useState<AgentTool[]>([])
   const [allSkills, setAllSkills] = useState<{ id: string; name: string; description: string | null; category: string }[]>([])
   const [allAgents, setAllAgents] = useState<{ id: string; name: string; avatar_url: string | null }[]>([])
+  const [plans, setPlans] = useState<Array<{id: string, name: string, slug: string}>>([])
+
 
   // Identity tab state
   const [name, setName] = useState('')
@@ -155,6 +226,7 @@ export default function AgentBuilderPage() {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [maxTurns, setMaxTurns] = useState(10)
   const [isHead, setIsHead] = useState(false)
+  const [planId, setPlanId] = useState<string>('')
 
   // Tools tab state
   const [selectedToolIds, setSelectedToolIds] = useState<Set<string>>(new Set())
@@ -163,6 +235,16 @@ export default function AgentBuilderPage() {
 
   // Skills tab state
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set())
+
+  // Mind tab state
+  const [allMind, setAllMind] = useState<AgentMindFile[]>([])
+  const [selectedMindIds, setSelectedMindIds] = useState<Set<string>>(new Set())
+  const [mindCategory, setMindCategory] = useState<string>('all')
+
+  // Hierarchical mind state
+  const [companyMind, setCompanyMind] = useState<AgentMindFile[]>([])
+  const [departmentMind, setDepartmentMind] = useState<AgentMindFile[]>([])
+  const [agentLearnings, setAgentLearnings] = useState<AgentLearning[]>([])
 
   // Prompt tab state
   const [systemPrompt, setSystemPrompt] = useState('')
@@ -217,6 +299,7 @@ export default function AgentBuilderPage() {
       setPermissionMode(data.agent.permission_mode)
       setMaxTurns(data.agent.max_turns)
       setIsHead(data.agent.is_head)
+      setPlanId(data.agent.plan_id || '_all')
       setSystemPrompt(data.agent.system_prompt)
 
       // Set tools
@@ -226,6 +309,10 @@ export default function AgentBuilderPage() {
       // Set skills
       const skillIds = new Set<string>((data.agent.skills || []).map((s: { skill_id: string }) => s.skill_id))
       setSelectedSkillIds(skillIds)
+
+      // Set mind
+      const mindIds = new Set<string>((data.agent.mind || []).map((m: { mind_id: string }) => m.mind_id))
+      setSelectedMindIds(mindIds)
 
       // Set prompt sections
       setPromptSections(data.agent.prompt_sections || [])
@@ -287,13 +374,72 @@ export default function AgentBuilderPage() {
     }
   }, [id])
 
+  // Fetch plans
+  const fetchPlans = useCallback(async () => {
+    const res = await fetch('/api/admin/plans')
+    if (res.ok) {
+      const data = await res.json()
+      setPlans(data.plans || [])
+    }
+  }, [])
+
+  // Fetch all mind files (agent-scoped, for assignment)
+  const fetchMind = useCallback(async () => {
+    const res = await fetch('/api/admin/mind?scope=agent')
+    if (res.ok) {
+      const data = await res.json()
+      setAllMind(data.mind || [])
+    }
+  }, [])
+
+  // Fetch hierarchical mind (company and department scoped) for this agent
+  const fetchHierarchicalMind = useCallback(async () => {
+    if (!agent?.workspace_id) return
+
+    const companyRes = await fetch(`/api/admin/mind?workspace_id=${agent.workspace_id}&scope=company`)
+    if (companyRes.ok) {
+      const data = await companyRes.json()
+      setCompanyMind(data.mind || [])
+    }
+
+    if (agent?.department_id) {
+      const deptRes = await fetch(`/api/admin/mind?workspace_id=${agent.workspace_id}&scope=department&department_id=${agent.department_id}`)
+      if (deptRes.ok) {
+        const data = await deptRes.json()
+        setDepartmentMind(data.mind || [])
+      }
+    } else {
+      setDepartmentMind([])
+    }
+
+    const learningsRes = await fetch(`/api/admin/learning?workspace_id=${agent.workspace_id}&is_approved=true&is_active=true`)
+    if (learningsRes.ok) {
+      const data = await learningsRes.json()
+      const applicable = (data.learnings || []).filter((l: AgentLearning) => {
+        if (l.scope === 'company') return true
+        if (l.scope === 'department' && l.department_id === agent.department_id) return true
+        if (l.scope === 'agent' && l.agent_id === agent.id) return true
+        return false
+      })
+      setAgentLearnings(applicable)
+    }
+  }, [agent?.workspace_id, agent?.department_id, agent?.id])
+
   useEffect(() => {
     fetchAgent()
     fetchTools()
     fetchSkills()
     fetchAgents()
     fetchSchedules()
-  }, [fetchAgent, fetchTools, fetchSkills, fetchAgents, fetchSchedules])
+    fetchMind()
+    fetchPlans()
+  }, [fetchAgent, fetchTools, fetchSkills, fetchAgents, fetchSchedules, fetchMind, fetchPlans])
+
+  useEffect(() => {
+    if (agent) {
+      fetchHierarchicalMind()
+    }
+  }, [agent, fetchHierarchicalMind])
 
   // Save identity
   async function saveIdentity() {
@@ -312,6 +458,7 @@ export default function AgentBuilderPage() {
           permission_mode: permissionMode,
           max_turns: maxTurns,
           is_head: isHead,
+          plan_id: planId === '_all' ? null : planId,
           system_prompt: systemPrompt
         })
       })
@@ -366,6 +513,27 @@ export default function AgentBuilderPage() {
       await fetchAgent()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save skills')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Save mind
+  async function saveMind() {
+    setSaving(true)
+    setError(null)
+
+    try {
+      const res = await fetch(`/api/admin/agents/${id}/mind`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mind_ids: Array.from(selectedMindIds) })
+      })
+
+      if (!res.ok) throw new Error('Failed to save mind')
+      await fetchAgent()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save mind')
     } finally {
       setSaving(false)
     }
@@ -680,12 +848,30 @@ export default function AgentBuilderPage() {
     })
   }
 
+  // Toggle mind selection
+  function toggleMind(mindId: string) {
+    setSelectedMindIds(prev => {
+      const next = new Set(prev)
+      if (next.has(mindId)) {
+        next.delete(mindId)
+      } else {
+        next.add(mindId)
+      }
+      return next
+    })
+  }
+
   // Filter tools
   const filteredTools = allTools.filter(tool => {
     const matchesSearch = tool.name.toLowerCase().includes(toolSearch.toLowerCase()) ||
       (tool.description?.toLowerCase().includes(toolSearch.toLowerCase()))
     const matchesCategory = toolCategory === 'all' || tool.category === toolCategory
     return matchesSearch && matchesCategory
+  })
+
+  const filteredMind = allMind.filter(mind => {
+    const matchesCategory = mindCategory === 'all' || mind.category === mindCategory
+    return matchesCategory
   })
 
   if (loading) {
@@ -785,41 +971,46 @@ export default function AgentBuilderPage() {
         {/* Main Content */}
         <div className="flex-1">
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-            <TabsList className="grid w-full grid-cols-8">
+            <TabsList className="flex w-full flex-nowrap gap-2 overflow-x-auto">
               <TabsTrigger value="identity" className="flex items-center gap-1">
                 <User className="h-4 w-4" />
                 Identity
               </TabsTrigger>
-              <TabsTrigger value="tools" className="flex items-center gap-1">
+              <TabsTrigger value="tools" className="flex items-center gap-1 flex-shrink-0">
                 <Wrench className="h-4 w-4" />
                 Tools
                 <Badge variant="secondary" className="ml-1">{selectedToolIds.size}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="skills" className="flex items-center gap-1">
+              <TabsTrigger value="skills" className="flex items-center gap-1 flex-shrink-0">
                 <BookOpen className="h-4 w-4" />
                 Skills
                 <Badge variant="secondary" className="ml-1">{selectedSkillIds.size}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="prompt" className="flex items-center gap-1">
+              <TabsTrigger value="mind" className="flex items-center gap-1 flex-shrink-0">
+                <Brain className="h-4 w-4" />
+                Mind
+                <Badge variant="secondary" className="ml-1">{selectedMindIds.size}</Badge>
+              </TabsTrigger>
+              <TabsTrigger value="prompt" className="flex items-center gap-1 flex-shrink-0">
                 <FileText className="h-4 w-4" />
                 Prompt
               </TabsTrigger>
-              <TabsTrigger value="team" className="flex items-center gap-1">
+              <TabsTrigger value="team" className="flex items-center gap-1 flex-shrink-0">
                 <Users className="h-4 w-4" />
                 Team
                 <Badge variant="secondary" className="ml-1">{delegations.length}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="rules" className="flex items-center gap-1">
+              <TabsTrigger value="rules" className="flex items-center gap-1 flex-shrink-0">
                 <Shield className="h-4 w-4" />
                 Rules
                 <Badge variant="secondary" className="ml-1">{rules.length}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="schedules" className="flex items-center gap-1">
+              <TabsTrigger value="schedules" className="flex items-center gap-1 flex-shrink-0">
                 <Calendar className="h-4 w-4" />
                 Schedules
                 <Badge variant="secondary" className="ml-1">{schedules.length}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="test" className="flex items-center gap-1">
+              <TabsTrigger value="test" className="flex items-center gap-1 flex-shrink-0">
                 <Play className="h-4 w-4" />
                 Test
               </TabsTrigger>
@@ -849,7 +1040,7 @@ export default function AgentBuilderPage() {
                     <Textarea id="description" value={description} onChange={e => setDescription(e.target.value)} rows={2} />
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-3">
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
                     <div className="space-y-2">
                       <Label>Model</Label>
                       <Select value={model} onValueChange={(v) => setModel(v as AgentModel)}>
@@ -878,6 +1069,21 @@ export default function AgentBuilderPage() {
                                 <div className="text-xs text-muted-foreground">{opt.description}</div>
                               </div>
                             </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Plan</Label>
+                      <Select value={planId} onValueChange={setPlanId}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="All Plans" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="_all">All Plans (No Restriction)</SelectItem>
+                          {plans.map(plan => (
+                            <SelectItem key={plan.id} value={plan.id}>{plan.name}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
@@ -1032,6 +1238,195 @@ export default function AgentBuilderPage() {
                   </ScrollArea>
                 </CardContent>
               </Card>
+            </TabsContent>
+
+            {/* Mind Tab */}
+            <TabsContent value="mind">
+              <div className="space-y-6">
+                {agent?.workspace_id && companyMind.length > 0 && (
+                  <Card className="border-green-200 dark:border-green-800">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center gap-2">
+                        <Building2 className="h-5 w-5 text-green-600" />
+                        <CardTitle className="text-lg">Company Knowledge</CardTitle>
+                        <Badge variant="outline" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                          Inherited
+                        </Badge>
+                        <Lock className="h-4 w-4 text-muted-foreground ml-auto" />
+                      </div>
+                      <CardDescription>
+                        Knowledge shared by all agents in this workspace. Automatically included.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        {companyMind.map(mind => (
+                          <div key={mind.id} className="flex items-start gap-3 p-3 rounded-md bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{mind.name}</span>
+                                <Badge variant="outline" className="text-xs">{MIND_CATEGORY_LABELS[mind.category]}</Badge>
+                              </div>
+                              <p className="text-sm text-muted-foreground">{mind.description || 'No description'}</p>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {mind.content.length} characters | ~{Math.ceil(mind.content.length / 4)} tokens
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {agent?.workspace_id && agent?.department_id && departmentMind.length > 0 && (
+                  <Card className="border-blue-200 dark:border-blue-800">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center gap-2">
+                        <Building className="h-5 w-5 text-blue-600" />
+                        <CardTitle className="text-lg">Department Knowledge</CardTitle>
+                        <Badge variant="outline" className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200">
+                          Inherited
+                        </Badge>
+                        <Lock className="h-4 w-4 text-muted-foreground ml-auto" />
+                      </div>
+                      <CardDescription>
+                        Knowledge shared by all agents in {agent?.department?.name || 'this department'}. Automatically included.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        {departmentMind.map(mind => (
+                          <div key={mind.id} className="flex items-start gap-3 p-3 rounded-md bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{mind.name}</span>
+                                <Badge variant="outline" className="text-xs">{MIND_CATEGORY_LABELS[mind.category]}</Badge>
+                              </div>
+                              <p className="text-sm text-muted-foreground">{mind.description || 'No description'}</p>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {mind.content.length} characters | ~{Math.ceil(mind.content.length / 4)} tokens
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+
+                <Card className="border-purple-200 dark:border-purple-800">
+                  <CardHeader>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Brain className="h-5 w-5 text-purple-600" />
+                        <CardTitle className="text-lg">Agent Knowledge</CardTitle>
+                        <Badge variant="outline" className="bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200">
+                          {selectedMindIds.size} selected
+                        </Badge>
+                      </div>
+                      <Button onClick={saveMind} disabled={saving}>
+                        {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Save className="h-4 w-4 mr-2" />}
+                        Save Mind
+                      </Button>
+                    </div>
+                    <CardDescription>
+                      Knowledge specific to this agent. Select which mind files to include.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex gap-4">
+                      <Select value={mindCategory} onValueChange={setMindCategory}>
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Category" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Categories</SelectItem>
+                          {MIND_CATEGORIES.map(cat => (
+                            <SelectItem key={cat} value={cat}>{cat.charAt(0).toUpperCase() + cat.slice(1)}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <ScrollArea className="h-[300px] border rounded-md">
+                      <div className="p-4 space-y-2">
+                        {filteredMind.map(mind => (
+                          <div
+                            key={mind.id}
+                            className={`flex items-start gap-3 p-3 rounded-md border cursor-pointer transition-colors ${
+                              selectedMindIds.has(mind.id) ? 'bg-purple-50 dark:bg-purple-950/30 border-purple-400' : 'hover:bg-muted'
+                            }`}
+                            onClick={() => toggleMind(mind.id)}
+                          >
+                            <Checkbox checked={selectedMindIds.has(mind.id)} />
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{mind.name}</span>
+                                <Badge variant="outline" className="text-xs">{MIND_CATEGORY_LABELS[mind.category]}</Badge>
+                                <Badge variant="secondary" className="text-xs">{MIND_CONTENT_TYPE_LABELS[mind.content_type]}</Badge>
+                              </div>
+                              <p className="text-sm text-muted-foreground">{mind.description || 'No description'}</p>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {mind.content.length} characters | ~{Math.ceil(mind.content.length / 4)} tokens
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                        {filteredMind.length === 0 && (
+                          <p className="text-center text-muted-foreground py-8">
+                            No agent-scoped mind files available. Create mind files with &quot;Agent&quot; scope in the Mind section.
+                          </p>
+                        )}
+                      </div>
+                    </ScrollArea>
+                  </CardContent>
+                </Card>
+
+                {agentLearnings.length > 0 && (
+                  <Card className="border-amber-200 dark:border-amber-800">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="h-5 w-5 text-amber-600" />
+                        <CardTitle className="text-lg">Active Learnings</CardTitle>
+                        <Badge variant="outline" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                          {agentLearnings.length} insights
+                        </Badge>
+                      </div>
+                      <CardDescription>
+                        Dynamic insights learned from experience. These are automatically included in the agent&apos;s context.
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-2">
+                        {agentLearnings.map(learning => (
+                          <div key={learning.id} className="flex items-start gap-3 p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{learning.title}</span>
+                                <Badge
+                                  variant="outline"
+                                  className={`text-xs ${
+                                    learning.scope === 'company' ? 'bg-green-100 text-green-800' :
+                                    learning.scope === 'department' ? 'bg-blue-100 text-blue-800' :
+                                    'bg-purple-100 text-purple-800'
+                                  }`}
+                                >
+                                  {MIND_SCOPE_LABELS[learning.scope]}
+                                </Badge>
+                              </div>
+                              <p className="text-sm text-muted-foreground mt-1">{learning.insight}</p>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                Confidence: {Math.round(learning.confidence_score * 100)}%
+                              </p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
             </TabsContent>
 
             {/* Prompt Tab */}

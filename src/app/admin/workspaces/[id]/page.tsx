@@ -61,6 +61,8 @@ import {
   Crown,
   Shield,
   User,
+  Brain,
+  Copy,
 } from 'lucide-react'
 
 interface Profile {
@@ -128,6 +130,18 @@ interface AuditLog {
   user: Profile | null
 }
 
+interface WorkspaceMind {
+  id: string
+  name: string
+  description: string | null
+  category: string
+  content_type: string
+  is_enabled: boolean
+  is_system: boolean
+  workspace_id: string | null
+  created_at: string
+}
+
 export default function WorkspaceDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -138,6 +152,7 @@ export default function WorkspaceDetailPage() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
   const [featureFlags, setFeatureFlags] = useState<FeatureFlag[]>([])
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([])
+  const [mind, setMind] = useState<WorkspaceMind[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('overview')
 
@@ -196,6 +211,14 @@ export default function WorkspaceDetailPage() {
     }
   }, [workspaceId])
 
+  const fetchMind = useCallback(async () => {
+    const res = await fetch(`/api/admin/mind?workspace_id=${workspaceId}&include_workspace=true`)
+    if (res.ok) {
+      const data = await res.json()
+      setMind(data.mind || [])
+    }
+  }, [workspaceId])
+
   useEffect(() => {
     async function loadData() {
       setLoading(true)
@@ -204,12 +227,13 @@ export default function WorkspaceDetailPage() {
         fetchMembers(),
         fetchApiKeys(),
         fetchFeatureFlags(),
-        fetchAuditLogs()
+        fetchAuditLogs(),
+        fetchMind()
       ])
       setLoading(false)
     }
     loadData()
-  }, [fetchWorkspace, fetchMembers, fetchApiKeys, fetchFeatureFlags, fetchAuditLogs])
+  }, [fetchWorkspace, fetchMembers, fetchApiKeys, fetchFeatureFlags, fetchAuditLogs, fetchMind])
 
   async function handleSuspend() {
     setActionLoading(true)
@@ -418,6 +442,10 @@ export default function WorkspaceDetailPage() {
           <TabsTrigger value="activity" className="gap-2">
             <Activity className="h-4 w-4" />
             Activity
+          </TabsTrigger>
+          <TabsTrigger value="mind" className="gap-2">
+            <Brain className="h-4 w-4" />
+            Mind ({mind.filter(m => m.workspace_id === workspaceId).length})
           </TabsTrigger>
         </TabsList>
 
@@ -679,6 +707,117 @@ export default function WorkspaceDetailPage() {
                         </p>
                       </div>
                     </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Mind Tab */}
+        <TabsContent value="mind" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Brain className="h-5 w-5" />
+                Workspace Mind Files
+              </CardTitle>
+              <CardDescription>
+                Custom mind files created for this workspace (excludes system templates)
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {mind.filter(m => m.workspace_id === workspaceId).length === 0 ? (
+                <p className="text-muted-foreground text-center py-4">
+                  No custom mind files created for this workspace yet.
+                </p>
+              ) : (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Category</TableHead>
+                      <TableHead>Type</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead>Created</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {mind
+                      .filter(m => m.workspace_id === workspaceId)
+                      .map(item => (
+                        <TableRow key={item.id}>
+                          <TableCell>
+                            <div>
+                              <p className="font-medium">{item.name}</p>
+                              {item.description && (
+                                <p className="text-sm text-muted-foreground truncate max-w-[200px]">
+                                  {item.description}
+                                </p>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{item.category}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">{item.content_type}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={item.is_enabled ? 'default' : 'secondary'}>
+                              {item.is_enabled ? 'Active' : 'Inactive'}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                  </TableBody>
+                </Table>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Copy className="h-5 w-5" />
+                Available System Mind Templates
+              </CardTitle>
+              <CardDescription>
+                System mind templates that can be copied to this workspace
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {mind.filter(m => m.is_system).length === 0 ? (
+                <p className="text-muted-foreground text-center py-4">
+                  No system mind templates available.
+                </p>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                  {mind.filter(m => m.is_system).map(item => (
+                    <Card key={item.id} className="p-4">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <p className="font-medium truncate">{item.name}</p>
+                            <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 text-xs shrink-0">
+                              System
+                            </Badge>
+                          </div>
+                          {item.description && (
+                            <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
+                              {item.description}
+                            </p>
+                          )}
+                          <div className="flex gap-2 mt-2">
+                            <Badge variant="outline" className="text-xs">{item.category}</Badge>
+                            <Badge variant="secondary" className="text-xs">{item.content_type}</Badge>
+                          </div>
+                        </div>
+                      </div>
+                    </Card>
                   ))}
                 </div>
               )}
