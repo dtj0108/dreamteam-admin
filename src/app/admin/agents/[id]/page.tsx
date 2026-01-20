@@ -222,6 +222,7 @@ export default function AgentBuilderPage() {
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [description, setDescription] = useState('')
+  const [userDescription, setUserDescription] = useState('')
   const [model, setModel] = useState<AgentModel>('sonnet')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [maxTurns, setMaxTurns] = useState(10)
@@ -295,6 +296,7 @@ export default function AgentBuilderPage() {
       setName(data.agent.name)
       setSlug(data.agent.slug || '')
       setDescription(data.agent.description || '')
+      setUserDescription(data.agent.user_description || '')
       setModel(data.agent.model)
       setPermissionMode(data.agent.permission_mode)
       setMaxTurns(data.agent.max_turns)
@@ -454,6 +456,7 @@ export default function AgentBuilderPage() {
           name,
           slug: slug || undefined,
           description: description || null,
+          user_description: userDescription || null,
           model,
           permission_mode: permissionMode,
           max_turns: maxTurns,
@@ -1038,6 +1041,21 @@ export default function AgentBuilderPage() {
                   <div className="space-y-2">
                     <Label htmlFor="description">Description</Label>
                     <Textarea id="description" value={description} onChange={e => setDescription(e.target.value)} rows={2} />
+                    <p className="text-xs text-muted-foreground">Internal description for admin use</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="userDescription">User Description</Label>
+                    <Textarea
+                      id="userDescription"
+                      value={userDescription}
+                      onChange={e => setUserDescription(e.target.value)}
+                      rows={3}
+                      placeholder="Describe what this agent does for end users..."
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Shown to users in the mobile/web app to explain what this agent can help with
+                    </p>
                   </div>
 
                   <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">

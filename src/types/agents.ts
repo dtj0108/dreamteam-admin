@@ -12,6 +12,7 @@ export interface Agent {
   name: string
   slug: string | null
   description: string | null
+  user_description: string | null
   department_id: string | null
   avatar_url: string | null
   model: AgentModel
@@ -364,6 +365,7 @@ export interface CreateAgentRequest {
   name: string
   slug?: string
   description?: string
+  user_description?: string
   department_id?: string
   avatar_url?: string
   model?: AgentModel
@@ -377,6 +379,7 @@ export interface UpdateAgentRequest {
   name?: string
   slug?: string
   description?: string
+  user_description?: string | null
   department_id?: string | null
   avatar_url?: string | null
   model?: AgentModel

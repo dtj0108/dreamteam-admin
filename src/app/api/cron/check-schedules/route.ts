@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { getNextRunTime } from '@/lib/cron-utils'
+import { runScheduledExecution } from '@/lib/agent-runtime'
 
 /**
  * Vercel Cron endpoint - called periodically to check for due schedules
@@ -113,29 +114,30 @@ export async function GET(request: NextRequest) {
             execution_id: execution.id
           })
         } else {
-          // Execute immediately
-          // TODO: In production, invoke Claude Agent SDK here
-          // For now, mark as completed with a placeholder result
+          // Execute immediately using the agent runtime
+          try {
+            const agentResult = await runScheduledExecution(
+              execution.id,
+              schedule.agent_id,
+              schedule.task_prompt
+            )
 
-          await supabase
-            .from('agent_schedule_executions')
-            .update({
-              status: 'completed',
-              completed_at: new Date().toISOString(),
-              result: {
-                message: 'Scheduled execution completed (placeholder)',
-                task_prompt: schedule.task_prompt
-              },
-              duration_ms: 100
+            results.push({
+              schedule_id: schedule.id,
+              schedule_name: schedule.name,
+              status: agentResult.success ? 'completed' : 'failed',
+              execution_id: execution.id
             })
-            .eq('id', execution.id)
-
-          results.push({
-            schedule_id: schedule.id,
-            schedule_name: schedule.name,
-            status: 'completed',
-            execution_id: execution.id
-          })
+          } catch (execError) {
+            console.error(`Agent execution error for schedule ${schedule.id}:`, execError)
+            results.push({
+              schedule_id: schedule.id,
+              schedule_name: schedule.name,
+              status: 'failed',
+              execution_id: execution.id,
+              error: execError instanceof Error ? execError.message : 'Execution failed'
+            })
+          }
         }
       } catch (scheduleError) {
         console.error(`Error processing schedule ${schedule.id}:`, scheduleError)

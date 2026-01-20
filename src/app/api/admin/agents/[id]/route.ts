@@ -204,7 +204,7 @@ export async function PATCH(
   const body = await request.json()
 
   const allowedFields = [
-    'name', 'description', 'department_id', 'avatar_url', 'model',
+    'name', 'description', 'user_description', 'department_id', 'avatar_url', 'model',
     'system_prompt', 'permission_mode', 'max_turns', 'is_enabled',
     'is_head', 'config', 'plan_id'
   ]
