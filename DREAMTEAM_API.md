@@ -997,6 +997,54 @@ Get financial events for calendar view (subscriptions, recurring income/expenses
 
 ---
 
+## Agent Communication
+
+### POST /api/workspaces/[workspaceId]/agents/[agentId]/chat
+
+Send a message to an agent within a workspace. The agent automatically has access to the current user's workspace ID and profile information.
+
+**Request:**
+```json
+{
+  "message": "What is my account balance?",
+  "conversationHistory": [
+    { "role": "user", "content": "Hello" },
+    { "role": "assistant", "content": "Hi! How can I help?" }
+  ]
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `message` | string | Yes | The user's message to the agent |
+| `conversationHistory` | array | No | Previous messages for context |
+
+**Response (200):**
+```json
+{
+  "response": "Your current balance is $5,000...",
+  "usage": {
+    "inputTokens": 150,
+    "outputTokens": 120
+  }
+}
+```
+
+**Notes:**
+- Workspace ID and user info are automatically injected into the agent's context
+- Agents will NOT ask for workspace ID or user ID - they already have this information
+- `conversationHistory` allows multi-turn conversations without server-side session storage
+- Both system agents and workspace-specific agents are accessible
+
+**Errors:**
+- `400` - Message missing or invalid
+- `401` - Not authenticated
+- `403` - Not a member of the workspace
+- `404` - Agent not found or not accessible from this workspace
+- `500` - Agent execution error
+
+---
+
 ## Plaid Integration
 
 See [PLAID_INTEGRATION.md](./PLAID_INTEGRATION.md) for detailed Plaid documentation.

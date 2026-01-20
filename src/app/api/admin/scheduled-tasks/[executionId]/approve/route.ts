@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireSuperadmin, logAdminAction } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { runAgentById } from '@/lib/agent-runtime'
 
 // POST /api/admin/scheduled-tasks/[executionId]/approve - Approve and run a pending execution
 export async function POST(
@@ -63,35 +64,77 @@ export async function POST(
       return NextResponse.json({ error: updateError.message }, { status: 500 })
     }
 
-    // TODO: Actually invoke the agent here
-    // For now, simulate completion
+    // Run the agent after approval
+    const startTime = Date.now()
 
-    await supabase
-      .from('agent_schedule_executions')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        result: {
-          message: 'Approved execution completed (placeholder)',
-          task_prompt: execution.schedule?.task_prompt
+    try {
+      const taskPrompt = execution.schedule?.task_prompt || 'Execute scheduled task'
+      const result = await runAgentById(execution.agent_id, taskPrompt)
+      const duration = Date.now() - startTime
+
+      await supabase
+        .from('agent_schedule_executions')
+        .update({
+          status: result.success ? 'completed' : 'failed',
+          completed_at: new Date().toISOString(),
+          result: {
+            message: result.result,
+            todos: result.todos,
+          },
+          tool_calls: result.toolCalls,
+          tokens_input: result.usage.inputTokens,
+          tokens_output: result.usage.outputTokens,
+          error_message: result.error || null,
+          duration_ms: duration,
+        })
+        .eq('id', executionId)
+
+      await logAdminAction(
+        user!.id,
+        'schedule_execution_approved',
+        'agent_schedule_execution',
+        executionId,
+        { schedule_id: execution.schedule_id, agent_id: execution.agent_id },
+        request
+      )
+
+      return NextResponse.json({
+        execution: {
+          ...updatedExecution,
+          status: result.success ? 'completed' : 'failed',
+          result: { message: result.result, todos: result.todos },
         },
-        duration_ms: 100
+        message: result.success ? 'Execution approved and completed' : 'Execution approved but failed',
+        usage: result.usage,
       })
-      .eq('id', executionId)
+    } catch (execError) {
+      const duration = Date.now() - startTime
 
-    await logAdminAction(
-      user!.id,
-      'schedule_execution_approved',
-      'agent_schedule_execution',
-      executionId,
-      { schedule_id: execution.schedule_id, agent_id: execution.agent_id },
-      request
-    )
+      await supabase
+        .from('agent_schedule_executions')
+        .update({
+          status: 'failed',
+          completed_at: new Date().toISOString(),
+          error_message: execError instanceof Error ? execError.message : 'Unknown error',
+          duration_ms: duration,
+        })
+        .eq('id', executionId)
 
-    return NextResponse.json({
-      execution: { ...updatedExecution, status: 'completed' },
-      message: 'Execution approved and completed'
-    })
+      await logAdminAction(
+        user!.id,
+        'schedule_execution_approved',
+        'agent_schedule_execution',
+        executionId,
+        { schedule_id: execution.schedule_id, agent_id: execution.agent_id, error: 'Execution failed' },
+        request
+      )
+
+      return NextResponse.json({
+        execution: { ...updatedExecution, status: 'failed' },
+        message: 'Execution approved but failed',
+        error: execError instanceof Error ? execError.message : 'Unknown error',
+      }, { status: 500 })
+    }
   } catch (err) {
     console.error('Approve execution error:', err)
     return NextResponse.json(

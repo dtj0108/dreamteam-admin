@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireSuperadmin, logAdminAction } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { runScheduledExecution } from '@/lib/agent-runtime'
 
 // POST /api/admin/agents/[id]/schedules/[scheduleId]/run - Manually trigger a schedule
 export async function POST(
@@ -73,31 +74,37 @@ export async function POST(
       request
     )
 
-    // TODO: Actually invoke the agent here
-    // For now, simulate by marking as completed after a short delay
-    // In production, this would be done by a background job or the agent-executor service
+    // Run the agent using the agent runtime
+    try {
+      const result = await runScheduledExecution(
+        execution.id,
+        agentId,
+        schedule.task_prompt
+      )
 
-    // Update to completed (placeholder)
-    await supabase
-      .from('agent_schedule_executions')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        result: { message: 'Manual execution completed (placeholder)' },
-        duration_ms: 100
-      })
-      .eq('id', execution.id)
+      // Update schedule's last_run_at
+      await supabase
+        .from('agent_schedules')
+        .update({ last_run_at: new Date().toISOString() })
+        .eq('id', scheduleId)
 
-    // Update schedule's last_run_at
-    await supabase
-      .from('agent_schedules')
-      .update({ last_run_at: new Date().toISOString() })
-      .eq('id', scheduleId)
-
-    return NextResponse.json({
-      execution: { ...execution, status: 'completed' },
-      message: 'Execution completed'
-    }, { status: 201 })
+      return NextResponse.json({
+        execution: {
+          ...execution,
+          status: result.success ? 'completed' : 'failed',
+          result: { message: result.result, todos: result.todos },
+        },
+        message: result.success ? 'Execution completed' : 'Execution failed',
+        usage: result.usage,
+      }, { status: 201 })
+    } catch (execError) {
+      console.error('Agent execution error:', execError)
+      return NextResponse.json({
+        execution: { ...execution, status: 'failed' },
+        message: 'Execution failed',
+        error: execError instanceof Error ? execError.message : 'Unknown error',
+      }, { status: 500 })
+    }
   } catch (err) {
     console.error('Schedule run error:', err)
     return NextResponse.json(

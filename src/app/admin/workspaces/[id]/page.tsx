@@ -63,7 +63,17 @@ import {
   User,
   Brain,
   Copy,
+  Rocket,
+  ArrowUpCircle,
+  RefreshCw,
+  Bot,
+  ArrowRight,
+  Loader2,
+  Link as LinkIcon,
+  MessageSquare,
 } from 'lucide-react'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import type { WorkspaceDeployedTeamWithRelations, DeployedTeamConfig, Customizations } from '@/types/teams'
 
 interface Profile {
   id: string
@@ -156,6 +166,14 @@ export default function WorkspaceDetailPage() {
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('overview')
 
+  // Deployed team state
+  const [deployedTeam, setDeployedTeam] = useState<WorkspaceDeployedTeamWithRelations | null>(null)
+  const [deployedTeamLoading, setDeployedTeamLoading] = useState(false)
+  const [updateAvailable, setUpdateAvailable] = useState(false)
+  const [latestVersion, setLatestVersion] = useState(1)
+  const [upgrading, setUpgrading] = useState(false)
+  const [resetting, setResetting] = useState(false)
+
   // Dialog states
   const [suspendDialog, setSuspendDialog] = useState(false)
   const [suspendReason, setSuspendReason] = useState('')
@@ -219,6 +237,21 @@ export default function WorkspaceDetailPage() {
     }
   }, [workspaceId])
 
+  const fetchDeployedTeam = useCallback(async () => {
+    setDeployedTeamLoading(true)
+    try {
+      const res = await fetch(`/api/admin/workspaces/${workspaceId}/deployed-team`)
+      if (res.ok) {
+        const data = await res.json()
+        setDeployedTeam(data.deployment || null)
+        setUpdateAvailable(data.update_available || false)
+        setLatestVersion(data.latest_version || 1)
+      }
+    } finally {
+      setDeployedTeamLoading(false)
+    }
+  }, [workspaceId])
+
   useEffect(() => {
     async function loadData() {
       setLoading(true)
@@ -234,6 +267,13 @@ export default function WorkspaceDetailPage() {
     }
     loadData()
   }, [fetchWorkspace, fetchMembers, fetchApiKeys, fetchFeatureFlags, fetchAuditLogs, fetchMind])
+
+  // Fetch deployed team when switching to team tab
+  useEffect(() => {
+    if (activeTab === 'team' && !deployedTeam && !deployedTeamLoading) {
+      fetchDeployedTeam()
+    }
+  }, [activeTab, deployedTeam, deployedTeamLoading, fetchDeployedTeam])
 
   async function handleSuspend() {
     setActionLoading(true)
@@ -308,6 +348,34 @@ export default function WorkspaceDetailPage() {
     })
     if (res.ok) {
       fetchFeatureFlags()
+    }
+  }
+
+  async function handleUpgradeDeployment() {
+    setUpgrading(true)
+    try {
+      const res = await fetch(`/api/admin/workspaces/${workspaceId}/deployed-team/upgrade`, {
+        method: 'POST'
+      })
+      if (res.ok) {
+        await fetchDeployedTeam()
+      }
+    } finally {
+      setUpgrading(false)
+    }
+  }
+
+  async function handleResetCustomizations() {
+    setResetting(true)
+    try {
+      const res = await fetch(`/api/admin/workspaces/${workspaceId}/deployed-team/reset`, {
+        method: 'POST'
+      })
+      if (res.ok) {
+        await fetchDeployedTeam()
+      }
+    } finally {
+      setResetting(false)
     }
   }
 
@@ -446,6 +514,11 @@ export default function WorkspaceDetailPage() {
           <TabsTrigger value="mind" className="gap-2">
             <Brain className="h-4 w-4" />
             Mind ({mind.filter(m => m.workspace_id === workspaceId).length})
+          </TabsTrigger>
+          <TabsTrigger value="team" className="gap-2">
+            <Rocket className="h-4 w-4" />
+            Team
+            {deployedTeam && <Badge variant="secondary" className="ml-1">Active</Badge>}
           </TabsTrigger>
         </TabsList>
 
@@ -823,6 +896,304 @@ export default function WorkspaceDetailPage() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Team Tab */}
+        <TabsContent value="team" className="space-y-4">
+          {deployedTeamLoading ? (
+            <div className="space-y-4">
+              <Skeleton className="h-32 w-full" />
+              <Skeleton className="h-64 w-full" />
+            </div>
+          ) : deployedTeam ? (
+            <>
+              {/* Deployment Info Card */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="flex items-center gap-2">
+                        <Rocket className="h-5 w-5" />
+                        Deployed Team: {(deployedTeam.source_team as { name: string } | undefined)?.name || 'Unknown'}
+                      </CardTitle>
+                      <CardDescription>
+                        Deployed on {format(new Date(deployedTeam.deployed_at), 'PPP')}
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {updateAvailable && (
+                        <Button
+                          variant="outline"
+                          onClick={handleUpgradeDeployment}
+                          disabled={upgrading}
+                        >
+                          {upgrading ? (
+                            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                          ) : (
+                            <ArrowUpCircle className="h-4 w-4 mr-2" />
+                          )}
+                          Upgrade to v{latestVersion}
+                        </Button>
+                      )}
+                      <Button
+                        variant="outline"
+                        onClick={handleResetCustomizations}
+                        disabled={resetting}
+                      >
+                        {resetting ? (
+                          <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-4 w-4 mr-2" />
+                        )}
+                        Reset Customizations
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        onClick={() => router.push(`/admin/teams/${deployedTeam.source_team_id}`)}
+                      >
+                        <LinkIcon className="h-4 w-4 mr-2" />
+                        View Template
+                      </Button>
+                      <Button
+                        variant="default"
+                        onClick={() => router.push(`/admin/workspaces/${workspaceId}/team-chat`)}
+                      >
+                        <MessageSquare className="h-4 w-4 mr-2" />
+                        Team Chat
+                      </Button>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid gap-4 md:grid-cols-4">
+                    <div>
+                      <Label className="text-muted-foreground">Version</Label>
+                      <p className="font-medium">
+                        v{deployedTeam.source_version}
+                        {updateAvailable && (
+                          <Badge variant="outline" className="ml-2 text-yellow-600 border-yellow-600">
+                            Update Available
+                          </Badge>
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Status</Label>
+                      <p>
+                        <Badge
+                          variant={deployedTeam.status === 'active' ? 'default' : 'secondary'}
+                          className={deployedTeam.status === 'active' ? 'bg-green-100 text-green-800' : ''}
+                        >
+                          {deployedTeam.status}
+                        </Badge>
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Agents</Label>
+                      <p className="font-medium">
+                        {(deployedTeam.active_config as DeployedTeamConfig)?.agents?.filter(a => a.is_enabled).length || 0} active
+                      </p>
+                    </div>
+                    <div>
+                      <Label className="text-muted-foreground">Delegations</Label>
+                      <p className="font-medium">
+                        {(deployedTeam.active_config as DeployedTeamConfig)?.delegations?.filter(d => d.is_enabled).length || 0} active
+                      </p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Agents List */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Bot className="h-5 w-5" />
+                    Team Agents
+                  </CardTitle>
+                  <CardDescription>
+                    Agents deployed to this workspace
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Agent</TableHead>
+                        <TableHead>Model</TableHead>
+                        <TableHead>Tools</TableHead>
+                        <TableHead>Status</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {((deployedTeam.active_config as DeployedTeamConfig)?.agents || []).map(agent => (
+                        <TableRow key={agent.id}>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Bot className="h-4 w-4 text-muted-foreground" />
+                              <div>
+                                <p className="font-medium">{agent.name}</p>
+                                <p className="text-sm text-muted-foreground">{agent.slug}</p>
+                              </div>
+                              {(deployedTeam.active_config as DeployedTeamConfig)?.team?.head_agent_id === agent.id && (
+                                <Badge>Head</Badge>
+                              )}
+                            </div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{agent.model}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            {agent.tools?.length || 0} tools
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant={agent.is_enabled ? 'default' : 'secondary'}
+                              className={agent.is_enabled ? 'bg-green-100 text-green-800' : ''}
+                            >
+                              {agent.is_enabled ? 'Enabled' : 'Disabled'}
+                            </Badge>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+
+              {/* Delegations */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <ArrowRight className="h-5 w-5" />
+                    Delegation Rules
+                  </CardTitle>
+                  <CardDescription>
+                    How agents delegate tasks to each other
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {((deployedTeam.active_config as DeployedTeamConfig)?.delegations || []).length > 0 ? (
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>From</TableHead>
+                          <TableHead></TableHead>
+                          <TableHead>To</TableHead>
+                          <TableHead>Condition</TableHead>
+                          <TableHead>Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {((deployedTeam.active_config as DeployedTeamConfig)?.delegations || []).map(delegation => (
+                          <TableRow key={delegation.id}>
+                            <TableCell className="font-medium">{delegation.from_agent_slug}</TableCell>
+                            <TableCell>
+                              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                            </TableCell>
+                            <TableCell className="font-medium">{delegation.to_agent_slug}</TableCell>
+                            <TableCell className="text-muted-foreground">
+                              {delegation.condition || 'Always'}
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant={delegation.is_enabled ? 'default' : 'secondary'}
+                                className={delegation.is_enabled ? 'bg-green-100 text-green-800' : ''}
+                              >
+                                {delegation.is_enabled ? 'Enabled' : 'Disabled'}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  ) : (
+                    <p className="text-muted-foreground text-center py-4">
+                      No delegation rules configured
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Customizations Summary */}
+              {deployedTeam.customizations && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Customizations</CardTitle>
+                    <CardDescription>
+                      Workspace-specific modifications to the team template
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {(() => {
+                      const customizations = deployedTeam.customizations as Customizations
+                      const hasCustomizations =
+                        (customizations.disabled_agents?.length || 0) > 0 ||
+                        (customizations.disabled_delegations?.length || 0) > 0 ||
+                        (customizations.added_mind?.length || 0) > 0 ||
+                        Object.keys(customizations.agent_overrides || {}).length > 0
+
+                      if (!hasCustomizations) {
+                        return (
+                          <p className="text-muted-foreground text-center py-4">
+                            No customizations applied. Using default team configuration.
+                          </p>
+                        )
+                      }
+
+                      return (
+                        <div className="space-y-4">
+                          {(customizations.disabled_agents?.length || 0) > 0 && (
+                            <div>
+                              <Label className="text-muted-foreground">Disabled Agents</Label>
+                              <div className="flex gap-2 mt-1">
+                                {customizations.disabled_agents?.map(slug => (
+                                  <Badge key={slug} variant="secondary">{slug}</Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {(customizations.disabled_delegations?.length || 0) > 0 && (
+                            <div>
+                              <Label className="text-muted-foreground">Disabled Delegations</Label>
+                              <p className="font-medium">{customizations.disabled_delegations?.length} disabled</p>
+                            </div>
+                          )}
+                          {(customizations.added_mind?.length || 0) > 0 && (
+                            <div>
+                              <Label className="text-muted-foreground">Added Mind Files</Label>
+                              <p className="font-medium">{customizations.added_mind?.length} custom mind files</p>
+                            </div>
+                          )}
+                          {Object.keys(customizations.agent_overrides || {}).length > 0 && (
+                            <div>
+                              <Label className="text-muted-foreground">Agent Overrides</Label>
+                              <p className="font-medium">
+                                {Object.keys(customizations.agent_overrides || {}).length} agents modified
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
+                  </CardContent>
+                </Card>
+              )}
+            </>
+          ) : (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <Rocket className="h-12 w-12 mx-auto mb-4 opacity-20" />
+                <p className="text-muted-foreground">No team deployed to this workspace</p>
+                <p className="text-sm text-muted-foreground mt-2">
+                  Deploy a team from the Teams section to enable multi-agent collaboration.
+                </p>
+                <Button className="mt-4" onClick={() => router.push('/admin/teams')}>
+                  Go to Teams
+                </Button>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
 

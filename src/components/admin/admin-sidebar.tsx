@@ -19,7 +19,8 @@ import {
   GraduationCap,
   Zap,
   Calendar,
-  FileText
+  UsersRound,
+  CreditCard
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -38,9 +39,10 @@ const navItems = [
 
 const agentBuilderItems = [
   { href: '/admin/agents', label: 'Agents', icon: Bot },
+  { href: '/admin/teams', label: 'Teams', icon: UsersRound },
+  { href: '/admin/plans', label: 'Plans', icon: CreditCard },
   { href: '/admin/scheduled-tasks', label: 'Scheduled Tasks', icon: Calendar },
   { href: '/admin/skills', label: 'Skills', icon: BookOpen },
-  { href: '/admin/mind', label: 'Mind', icon: FileText },
   { href: '/admin/tools', label: 'Tools', icon: Wrench },
   { href: '/admin/mcp', label: 'MCP Integrations', icon: Plug },
   { href: '/admin/teachings', label: 'Teachings', icon: GraduationCap },

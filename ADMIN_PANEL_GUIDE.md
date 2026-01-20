@@ -32,6 +32,7 @@ The admin panel provides system-wide management capabilities for platform admini
 | **System Analytics** | Platform-wide usage metrics and health |
 | **Audit Logs** | Track admin actions and user activity |
 | **API Key Management** | Monitor and revoke API keys system-wide |
+| **Teams Management** | Create and manage agent teams with delegation workflows |
 
 ### Architecture Decision: Separate App vs Integrated
 
@@ -176,6 +177,59 @@ This section explains each admin capability, why it matters for FinanceBro, and 
 | Customer's integration stopped working | Look up their API keys → Check if expired or revoked → Verify usage patterns |
 | Suspicious API activity | Review API key usage metrics → Look for unusual patterns → Contact customer to verify |
 | Customer needs usage report | Pull API call metrics for their keys → Export for their review |
+
+---
+
+### Teams Management
+
+**What it does:** Create and manage agent teams that group multiple AI agents together. Define team composition, designate head agents, configure delegation rules, and assign shared knowledge (mind files).
+
+**Why it matters:** Teams enable multi-agent workflows where specialized agents collaborate. A head agent coordinates the team, delegating tasks based on conditions you define.
+
+**Common Use Cases:**
+
+| Scenario | What to do |
+|----------|-----------|
+| Create a new product tier | Build a team → Add relevant agents → Set head agent → Configure delegations |
+| Agent not being delegated to | Check team delegations → Verify delegation conditions → Ensure agent is enabled |
+| Team not functioning well | View Overview tab → Check health metrics → Verify head agent assigned |
+| Customer needs different agent mix | Edit team → Add/remove agents → Update delegations |
+
+#### Team Detail Page
+
+The team detail page has 5 tabs for managing all aspects of a team:
+
+**Overview Tab:**
+- **Health Metrics (4 cards):**
+  - Agents count: Shows number of agents in the team with status indicator (green ≥2, yellow =1, red =0)
+  - Head Agent: Shows whether a head agent is assigned (green = Yes, red = No)
+  - Delegations count: Shows number of delegation rules configured
+  - Configuration %: Shows percentage of agents with descriptions configured
+- **Team Structure visual:** Displays head agent at top with crown icon, team members below. Click any agent to navigate to their detail page.
+- **Delegation Flow:** Visual list showing from→to handoffs with conditions displayed
+- **Collapsible Settings section:** Edit team name, slug, description, head agent, and active status
+
+**Agents Tab:**
+- Displays all available agents with checkboxes for selection
+- Shows agent model, description, and enabled status
+- "Make Head" button to designate head agent
+- Save button persists team agent changes
+
+**Delegations Tab:**
+- **Add delegation form:** Select from agent, to agent, condition (when to delegate), and context template
+- **Delegations table:** Shows all configured delegations with delete option
+- Requires at least 2 agents in team to configure delegations
+
+**Plans Tab:**
+- Read-only list of plans that use this team
+- Links to plan detail pages
+- Cannot modify plans from team page—edit in Plans section
+
+**Mind Tab:**
+- **Assign Existing:** Select from available mind files in the library
+- **Create New:** Create a new mind file that's automatically assigned to the team
+- Toggle enable/disable for each assigned mind file
+- Remove mind files from team
 
 ---
 
@@ -742,6 +796,17 @@ function aggregateByDay(items: { created_at: string }[]) {
 | `/api/admin/api-keys/[id]` | DELETE | Revoke API key |
 | `/api/admin/audit-logs` | GET | View audit logs |
 | `/api/admin/analytics` | GET | System analytics dashboard |
+| `/api/admin/teams` | GET | List all teams |
+| `/api/admin/teams` | POST | Create new team |
+| `/api/admin/teams/[id]` | GET | Get team with agents, delegations, plans, and mind |
+| `/api/admin/teams/[id]` | PATCH | Update team settings |
+| `/api/admin/teams/[id]` | DELETE | Delete team (blocked if plans reference it) |
+| `/api/admin/teams/[id]/agents` | PUT | Update team agents (add/remove/reorder) |
+| `/api/admin/teams/[id]/delegations` | PUT | Update team delegations |
+| `/api/admin/teams/[id]/mind` | GET | Get team mind files |
+| `/api/admin/teams/[id]/mind` | PUT | Assign mind files to team |
+| `/api/admin/teams/[id]/mind` | POST | Create new mind file for team |
+| `/api/admin/teams/[id]/mind` | DELETE | Remove mind file from team |
 
 ---
 
@@ -800,7 +865,7 @@ Create `apps/finance/src/components/admin/admin-sidebar.tsx`:
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import {
-  Users, Building2, Flag, Key,
+  Users, Building2, Flag, Key, Bot, UsersRound, CreditCard,
   BarChart3, ScrollText, Settings, Shield
 } from 'lucide-react';
 import { cn } from '@repo/ui/lib/utils';
@@ -815,6 +880,13 @@ const navItems = [
   { href: '/admin/settings', label: 'Settings', icon: Settings },
 ];
 
+const agentBuilderItems = [
+  { href: '/admin/agents', label: 'Agents', icon: Bot },
+  { href: '/admin/teams', label: 'Teams', icon: UsersRound },
+  { href: '/admin/plans', label: 'Plans', icon: CreditCard },
+  // ... additional agent builder items
+];
+
 export function AdminSidebar() {
   const pathname = usePathname();
 
@@ -825,27 +897,53 @@ export function AdminSidebar() {
         <span className="text-lg font-semibold">Admin Panel</span>
       </div>
 
-      <nav className="space-y-1">
-        {navItems.map((item) => {
-          const isActive = pathname === item.href ||
-            (item.href !== '/admin' && pathname.startsWith(item.href));
+      <nav className="flex-1 overflow-y-auto">
+        <div className="space-y-1">
+          {navItems.map((item) => {
+            const isActive = pathname === item.href ||
+              (item.href !== '/admin' && pathname.startsWith(item.href));
 
-          return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={cn(
-                'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
-                isActive
-                  ? 'bg-primary text-primary-foreground'
-                  : 'hover:bg-muted'
-              )}
-            >
-              <item.icon className="h-4 w-4" />
-              {item.label}
-            </Link>
-          );
-        })}
+            return (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                  isActive
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted'
+                )}
+              >
+                <item.icon className="h-4 w-4" />
+                {item.label}
+              </Link>
+            );
+          })}
+        </div>
+
+        {/* Agent Builder Section */}
+        <div className="mt-6">
+          <p className="mb-2 px-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Agent Builder
+          </p>
+          <div className="space-y-1">
+            {agentBuilderItems.map((item) => (
+              <Link
+                key={item.href}
+                href={item.href}
+                className={cn(
+                  'flex items-center gap-3 rounded-md px-3 py-2 text-sm transition-colors',
+                  pathname.startsWith(item.href)
+                    ? 'bg-primary text-primary-foreground'
+                    : 'hover:bg-muted'
+                )}
+              >
+                <item.icon className="h-4 w-4" />
+                {item.label}
+              </Link>
+            ))}
+          </div>
+        </div>
       </nav>
     </aside>
   );
@@ -1150,8 +1248,11 @@ apps/finance/src/
 │   │   │   └── page.tsx         # API keys
 │   │   ├── audit-logs/
 │   │   │   └── page.tsx         # Audit logs
-│   │   └── settings/
-│   │       └── page.tsx         # Admin settings
+│   │   ├── settings/
+│   │   │   └── page.tsx         # Admin settings
+│   │   └── teams/
+│   │       ├── page.tsx         # Teams list
+│   │       └── [id]/page.tsx    # Team detail with Overview visualization
 │   └── api/
 │       └── admin/
 │           ├── analytics/route.ts
@@ -1162,7 +1263,12 @@ apps/finance/src/
 │           ├── feature-flags/route.ts
 │           ├── api-keys/route.ts
 │           ├── api-keys/[id]/route.ts
-│           └── audit-logs/route.ts
+│           ├── audit-logs/route.ts
+│           ├── teams/route.ts
+│           ├── teams/[id]/route.ts
+│           ├── teams/[id]/agents/route.ts
+│           ├── teams/[id]/delegations/route.ts
+│           └── teams/[id]/mind/route.ts
 ├── components/
 │   └── admin/
 │       ├── admin-sidebar.tsx
@@ -1173,6 +1279,96 @@ apps/finance/src/
 
 supabase/migrations/
 └── 047_add_superadmin_role.sql  # Database changes
+```
+
+---
+
+## Team Deployment System
+
+The deployed instance model separates **team templates** (what admins build) from **deployed instances** (what workspaces run).
+
+### Architecture
+
+```
+TEMPLATE (Admin Panel)              DEPLOYED INSTANCE (Per Workspace)
+──────────────────────              ────────────────────────────────
+teams                               workspace_deployed_teams
+├── team_agents                     ├── workspace_id
+├── team_delegations                ├── source_team_id
+├── team_mind                       ├── source_version
+└── (editable template)             ├── base_config (JSONB snapshot)
+                                    ├── customizations (workspace overrides)
+                                    ├── active_config (computed)
+                                    └── status (active/paused/replaced)
+```
+
+### Deployment Flow
+
+1. **Admin creates team template** - In Teams section, add agents, delegations, and mind
+2. **Deploy to workspaces** - From team's "Deployments" tab, select workspaces
+3. **Config snapshot created** - Full team config is captured as JSONB
+4. **Workspace receives deployment** - Shows in workspace's "Team" tab
+5. **Workspace can customize** - Disable agents, add mind, modify delegations
+6. **Runtime loads active_config** - Railway agent-server loads from `workspace_deployed_teams`
+
+### API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/admin/teams/[id]/deploy` | POST | Deploy team to workspace(s) |
+| `/api/admin/teams/[id]/deployments` | GET | List all deployments of a team |
+| `/api/admin/workspaces/[id]/deployed-team` | GET | Get workspace's deployed config |
+| `/api/admin/workspaces/[id]/deployed-team` | PATCH | Update customizations |
+| `/api/admin/workspaces/[id]/deployed-team` | DELETE | Undeploy team |
+| `/api/admin/workspaces/[id]/deployed-team/reset` | POST | Reset to template defaults |
+| `/api/admin/workspaces/[id]/deployed-team/upgrade` | POST | Upgrade to latest template version |
+
+### Customizations
+
+Workspaces can customize their deployment without modifying the template:
+
+```typescript
+interface Customizations {
+  disabled_agents: string[]        // Agent slugs to disable
+  disabled_delegations: string[]   // Delegation IDs to disable
+  added_mind: Mind[]               // Workspace-specific mind files
+  agent_overrides: Record<string, Partial<Agent>>  // Per-agent tweaks
+}
+```
+
+### Version Management
+
+- Templates have a `current_version` that auto-increments on changes
+- Deployments track `source_version` to detect when updates are available
+- "Upgrade" applies new template while preserving customizations
+- "Reset" clears customizations and reverts to base config
+
+### Auto-Deploy on Workspace Creation
+
+When a workspace is created with a plan that has a team assigned, the team is automatically deployed:
+
+```typescript
+// Called during workspace creation
+await autoDeployTeamForWorkspace(workspaceId, planId)
+```
+
+### Database Schema
+
+The `workspace_deployed_teams` table stores deployments:
+
+```sql
+CREATE TABLE workspace_deployed_teams (
+  id UUID PRIMARY KEY,
+  workspace_id UUID REFERENCES workspaces(id),
+  source_team_id UUID REFERENCES teams(id),
+  source_version INTEGER,
+  base_config JSONB,      -- Snapshot at deploy time
+  customizations JSONB,   -- Workspace overrides
+  active_config JSONB,    -- Computed: base + customizations
+  status TEXT,            -- active, paused, replaced
+  deployed_at TIMESTAMPTZ,
+  -- Unique constraint: one active deployment per workspace
+);
 ```
 
 ---
