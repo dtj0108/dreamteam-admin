@@ -101,6 +101,11 @@ export async function buildConfigSnapshot(teamId: string): Promise<DeployedTeamC
           }
         })
 
+      // Warn if agent has no tools assigned (helpful for debugging)
+      if (tools.length === 0) {
+        console.warn(`[deployment] Agent "${agent.name}" (${agent.id}) has no tools assigned`)
+      }
+
       // Get agent skills
       const { data: agentSkills } = await supabase
         .from('ai_agent_skills')
@@ -594,6 +599,100 @@ export async function undeployWorkspaceTeam(workspaceId: string): Promise<void> 
   if (error) {
     throw new Error(`Failed to undeploy team: ${error.message}`)
   }
+}
+
+/**
+ * Refresh all active deployments by rebuilding their configs from source.
+ * This updates both base_config and active_config with fresh data from
+ * the source team, including current tool assignments from ai_agent_tools.
+ */
+export async function refreshAllDeployments(
+  refreshedByUserId: string
+): Promise<{ success: number; failed: Array<{ id: string; error: string }> }> {
+  const supabase = createAdminClient()
+
+  // Get all active deployments
+  const { data: deployments, error: fetchError } = await supabase
+    .from('workspace_deployed_teams')
+    .select('id, source_team_id, customizations')
+    .eq('status', 'active')
+
+  if (fetchError) {
+    throw new Error(`Failed to fetch active deployments: ${fetchError.message}`)
+  }
+
+  if (!deployments || deployments.length === 0) {
+    return { success: 0, failed: [] }
+  }
+
+  let successCount = 0
+  const failed: Array<{ id: string; error: string }> = []
+
+  // Group deployments by source_team_id to avoid rebuilding the same config multiple times
+  const deploymentsByTeam = new Map<string, typeof deployments>()
+  for (const deployment of deployments) {
+    const teamId = deployment.source_team_id
+    if (!deploymentsByTeam.has(teamId)) {
+      deploymentsByTeam.set(teamId, [])
+    }
+    deploymentsByTeam.get(teamId)!.push(deployment)
+  }
+
+  // Process each team's deployments
+  for (const [teamId, teamDeployments] of deploymentsByTeam) {
+    // Build fresh config snapshot once per team
+    let freshBaseConfig: DeployedTeamConfig
+    try {
+      freshBaseConfig = await buildConfigSnapshot(teamId)
+    } catch (error) {
+      // If we can't build the config, fail all deployments for this team
+      for (const deployment of teamDeployments) {
+        failed.push({
+          id: deployment.id,
+          error: `Failed to build config for team ${teamId}: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        })
+      }
+      continue
+    }
+
+    // Update each deployment with the fresh config
+    for (const deployment of teamDeployments) {
+      try {
+        // Apply existing customizations to get the active config
+        const customizations = (deployment.customizations as Customizations) || {
+          disabled_agents: [],
+          disabled_delegations: [],
+          added_mind: [],
+          agent_overrides: {},
+        }
+        const freshActiveConfig = applyCustomizations(freshBaseConfig, customizations)
+
+        // Update the deployment
+        const { error: updateError } = await supabase
+          .from('workspace_deployed_teams')
+          .update({
+            base_config: freshBaseConfig,
+            active_config: freshActiveConfig,
+            last_customized_at: new Date().toISOString(),
+            last_customized_by: refreshedByUserId,
+          })
+          .eq('id', deployment.id)
+
+        if (updateError) {
+          failed.push({ id: deployment.id, error: updateError.message })
+        } else {
+          successCount++
+        }
+      } catch (error) {
+        failed.push({
+          id: deployment.id,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        })
+      }
+    }
+  }
+
+  return { success: successCount, failed }
 }
 
 // ============================================
