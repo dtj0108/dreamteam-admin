@@ -1,46 +1,24 @@
--- Migration: Add xAI Grok provider support
--- This migration adds multi-provider support to the AI agents system
+-- Migration: Add multi-provider support to AI agents
+-- Supports: Anthropic (Claude), OpenAI (GPT), xAI (Grok), Google (Gemini), etc.
 
--- Add provider column with backward-compatible default
+-- Add provider column with backward-compatible default (no strict constraint - allow any provider)
 ALTER TABLE ai_agents
-ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'anthropic'
-CHECK (provider IN ('anthropic', 'xai'));
+ADD COLUMN IF NOT EXISTS provider TEXT DEFAULT 'anthropic';
 
 -- Add provider-specific config column (for reasoning effort, etc.)
 ALTER TABLE ai_agents
 ADD COLUMN IF NOT EXISTS provider_config JSONB DEFAULT '{}';
 
--- Update the model constraint to include xAI models
--- First, drop existing constraint if it exists
+-- Drop existing model constraints to allow any model name
 ALTER TABLE ai_agents DROP CONSTRAINT IF EXISTS ai_agents_model_check;
+ALTER TABLE ai_agents DROP CONSTRAINT IF EXISTS ai_agents_provider_model_match;
 
--- Add new constraint with all valid models
-ALTER TABLE ai_agents ADD CONSTRAINT ai_agents_model_check
-CHECK (model IN (
-  'sonnet', 'opus', 'haiku',
-  'grok-4-fast', 'grok-3', 'grok-3-mini', 'grok-2'
-));
-
--- Ensure model matches provider with a check constraint
--- This ensures anthropic agents use claude models and xai agents use grok models
-ALTER TABLE ai_agents ADD CONSTRAINT ai_agents_provider_model_match CHECK (
-  (provider = 'anthropic' AND model IN ('sonnet', 'opus', 'haiku'))
-  OR
-  (provider = 'xai' AND model IN ('grok-4-fast', 'grok-3', 'grok-3-mini', 'grok-2'))
-);
-
--- Update agent_departments to support default provider
+-- Update agent_departments to support default provider (no strict constraint)
 ALTER TABLE agent_departments
-ADD COLUMN IF NOT EXISTS default_provider TEXT DEFAULT 'anthropic'
-CHECK (default_provider IN ('anthropic', 'xai'));
+ADD COLUMN IF NOT EXISTS default_provider TEXT DEFAULT 'anthropic';
 
--- Update the default model constraint for departments
+-- Drop existing department model constraints
 ALTER TABLE agent_departments DROP CONSTRAINT IF EXISTS agent_departments_default_model_check;
-ALTER TABLE agent_departments ADD CONSTRAINT agent_departments_default_model_check
-CHECK (default_model IN (
-  'sonnet', 'opus', 'haiku',
-  'grok-4-fast', 'grok-3', 'grok-3-mini', 'grok-2'
-));
 
 -- Add index for provider column (useful for filtering agents by provider)
 CREATE INDEX IF NOT EXISTS idx_ai_agents_provider ON ai_agents(provider);

@@ -46,7 +46,8 @@ export async function buildConfigSnapshot(teamId: string): Promise<DeployedTeamC
         description,
         avatar_url,
         system_prompt,
-        model
+        model,
+        provider
       )
     `)
     .eq('team_id', teamId)
@@ -68,6 +69,7 @@ export async function buildConfigSnapshot(teamId: string): Promise<DeployedTeamC
         avatar_url: string | null
         system_prompt: string
         model: string
+        provider: string | null
       } | null
 
       if (!agentData) {
@@ -167,7 +169,8 @@ export async function buildConfigSnapshot(teamId: string): Promise<DeployedTeamC
         description: agent.description,
         avatar_url: agent.avatar_url,
         system_prompt: agent.system_prompt,
-        model: (agent.model as 'sonnet' | 'opus' | 'haiku') || 'sonnet',
+        model: agent.model || 'sonnet',
+        provider: agent.provider || 'anthropic',
         is_enabled: true,
         tools,
         skills,

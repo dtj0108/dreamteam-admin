@@ -229,7 +229,8 @@ export interface DeployedAgent {
   description: string | null
   avatar_url: string | null
   system_prompt: string
-  model: 'sonnet' | 'opus' | 'haiku'
+  model: string  // Model name or alias (e.g., 'sonnet', 'gpt-4o', 'grok-3', 'gemini-flash')
+  provider?: string  // AI provider (e.g., 'anthropic', 'openai', 'xai', 'google')
   is_enabled: boolean // Can be toggled per-workspace
   tools: DeployedTool[]
   skills: DeployedSkill[]
