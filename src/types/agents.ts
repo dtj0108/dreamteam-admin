@@ -1,6 +1,49 @@
 // Agent Builder Types
 
 // ============================================
+// TOOL VALIDATION TYPES
+// ============================================
+
+export interface ValidationIssue {
+  code: string
+  field: string
+  message: string
+}
+
+export interface ValidationWarning extends ValidationIssue {
+  recommendation: string
+}
+
+export interface ToolValidationResult {
+  toolId: string
+  toolName: string
+  isValid: boolean
+  errors: ValidationIssue[]
+  warnings: ValidationWarning[]
+}
+
+export interface ProductionTestResult {
+  toolId: string
+  toolName: string
+  success: boolean
+  toolUseReturned: boolean
+  inputValid: boolean
+  latencyMs: number
+  error?: string
+  toolInput?: Record<string, unknown>
+}
+
+// MCP Server Execution Test Result - tests actual tool execution via MCP server
+export interface MCPTestResult {
+  toolId: string
+  toolName: string
+  success: boolean
+  result?: unknown
+  error?: string
+  latencyMs: number
+}
+
+// ============================================
 // CORE AGENT TYPES
 // ============================================
 
@@ -559,6 +602,18 @@ export const TOOL_CATEGORY_ICONS: Record<ToolCategory, string> = {
   communications: 'phone',
   goals: 'target',
   agents: 'bot'
+}
+
+// ============================================
+// TOOL EXECUTION CONTEXT
+// ============================================
+
+export interface ToolExecutionContext {
+  workspaceId: string
+  userId?: string
+  userName?: string
+  executionType: 'chat' | 'scheduled' | 'test'
+  executionId?: string
 }
 
 // ============================================

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireSuperadmin, logAdminAction } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { generateAgentSDKConfig } from '@/lib/agent-sdk'
+import { generateAgentSDKConfig, estimateToolTokens, estimatePromptTokens } from '@/lib/agent-sdk'
 
 // GET /api/admin/agents/[id] - Get single agent with all relations
 export async function GET(
@@ -178,10 +178,19 @@ export async function GET(
     // Generate SDK config
     const sdkConfig = generateAgentSDKConfig(fullAgent)
 
+    // Calculate token estimates
+    const tokenEstimates = {
+      systemPrompt: estimatePromptTokens(sdkConfig),
+      tools: estimateToolTokens(sdkConfig.tools),
+      total: estimatePromptTokens(sdkConfig) + estimateToolTokens(sdkConfig.tools),
+      toolCount: sdkConfig.tools.length,
+    }
+
     return NextResponse.json({
       agent: fullAgent,
       versions,
-      sdkConfig
+      sdkConfig,
+      tokenEstimates
     })
   } catch (err) {
     console.error('Agent GET error:', err)

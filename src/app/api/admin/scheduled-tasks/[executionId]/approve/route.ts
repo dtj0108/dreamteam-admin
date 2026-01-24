@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireSuperadmin, logAdminAction } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { runAgentById } from '@/lib/agent-runtime'
+import { sendScheduledTaskNotification } from '@/lib/agent-messaging'
 
 // POST /api/admin/scheduled-tasks/[executionId]/approve - Approve and run a pending execution
 export async function POST(
@@ -21,7 +22,7 @@ export async function POST(
       .from('agent_schedule_executions')
       .select(`
         *,
-        schedule:agent_schedules(id, name, task_prompt),
+        schedule:agent_schedules(id, name, task_prompt, created_by, workspace_id),
         agent:ai_agents(id, name, model, system_prompt, is_enabled)
       `)
       .eq('id', executionId)
@@ -89,6 +90,36 @@ export async function POST(
         })
         .eq('id', executionId)
 
+      // Send completion notification
+      const schedule = execution.schedule as {
+        id: string
+        name: string
+        task_prompt: string
+        created_by: string | null
+        workspace_id: string | null
+      } | null
+
+      if (schedule?.workspace_id) {
+        try {
+          await sendScheduledTaskNotification({
+            executionId,
+            aiAgentId: execution.agent_id,
+            scheduleId: schedule.id,
+            scheduleName: schedule.name,
+            taskPrompt: schedule.task_prompt,
+            status: result.success ? 'completed' : 'failed',
+            resultText: result.success ? result.result : (result.error || 'Unknown error'),
+            durationMs: duration,
+            workspaceId: schedule.workspace_id,
+            scheduleCreatedBy: schedule.created_by,
+            supabase,
+          })
+        } catch (notifyError) {
+          console.error('[approve] Failed to send notification:', notifyError)
+          // Don't fail the approval if notification fails
+        }
+      }
+
       await logAdminAction(
         user!.id,
         'schedule_execution_approved',
@@ -119,6 +150,35 @@ export async function POST(
           duration_ms: duration,
         })
         .eq('id', executionId)
+
+      // Send failure notification
+      const schedule = execution.schedule as {
+        id: string
+        name: string
+        task_prompt: string
+        created_by: string | null
+        workspace_id: string | null
+      } | null
+
+      if (schedule?.workspace_id) {
+        try {
+          await sendScheduledTaskNotification({
+            executionId,
+            aiAgentId: execution.agent_id,
+            scheduleId: schedule.id,
+            scheduleName: schedule.name,
+            taskPrompt: schedule.task_prompt,
+            status: 'failed',
+            resultText: execError instanceof Error ? execError.message : 'Unknown error',
+            durationMs: duration,
+            workspaceId: schedule.workspace_id,
+            scheduleCreatedBy: schedule.created_by,
+            supabase,
+          })
+        } catch (notifyError) {
+          console.error('[approve] Failed to send failure notification:', notifyError)
+        }
+      }
 
       await logAdminAction(
         user!.id,

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireSuperadmin, logAdminAction } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { runScheduledExecution } from '@/lib/agent-runtime'
+import { runScheduledExecution, ScheduledExecutionContext } from '@/lib/agent-runtime'
 
 // POST /api/admin/agents/[id]/schedules/[scheduleId]/run - Manually trigger a schedule
 export async function POST(
@@ -13,6 +13,8 @@ export async function POST(
     if (error) return error
 
     const { id: agentId, scheduleId } = await params
+    const body = await request.json().catch(() => ({}))
+    const workspaceId = body.workspace_id as string | undefined
     const supabase = createAdminClient()
 
     // Get schedule
@@ -76,10 +78,26 @@ export async function POST(
 
     // Run the agent using the agent runtime
     try {
+      // Build workspace context if provided
+      let context: ScheduledExecutionContext | undefined
+      if (workspaceId) {
+        const { data: workspace } = await supabase
+          .from('workspaces')
+          .select('name')
+          .eq('id', workspaceId)
+          .single()
+
+        context = {
+          workspaceId,
+          workspaceName: workspace?.name,
+        }
+      }
+
       const result = await runScheduledExecution(
         execution.id,
         agentId,
-        schedule.task_prompt
+        schedule.task_prompt,
+        context
       )
 
       // Update schedule's last_run_at
@@ -88,13 +106,22 @@ export async function POST(
         .update({ last_run_at: new Date().toISOString() })
         .eq('id', scheduleId)
 
+      // Fetch the updated execution with tokens from DB
+      const { data: updatedExecution } = await supabase
+        .from('agent_schedule_executions')
+        .select('*')
+        .eq('id', execution.id)
+        .single()
+
       return NextResponse.json({
-        execution: {
+        execution: updatedExecution || {
           ...execution,
           status: result.success ? 'completed' : 'failed',
           result: { message: result.result, todos: result.todos },
+          error_message: result.error || null,
         },
         message: result.success ? 'Execution completed' : 'Execution failed',
+        error: result.error,
         usage: result.usage,
       }, { status: 201 })
     } catch (execError) {

@@ -32,6 +32,25 @@ import { format } from 'date-fns'
 import { Calendar, CheckCircle, XCircle, Clock, AlertCircle, Bot, Loader2 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { AgentScheduleExecution } from '@/types/agents'
+import { ScheduleTestPanel } from '@/components/admin/schedule-test-panel'
+import { ExecutionDetails } from '@/components/admin/execution-details'
+
+interface Schedule {
+  id: string
+  name: string
+  agent_id: string
+  cron_expression: string
+  timezone?: string
+  is_enabled: boolean
+  requires_approval: boolean
+  task_prompt: string
+  agent?: {
+    id: string
+    name: string
+    is_enabled: boolean
+    avatar_url: string | null
+  }
+}
 
 interface ScheduleExecution extends AgentScheduleExecution {
   schedule?: {
@@ -91,6 +110,9 @@ export default function ScheduledTasksPage() {
   const [detailDialogOpen, setDetailDialogOpen] = useState(false)
   const [selectedExecution, setSelectedExecution] = useState<ScheduleExecution | null>(null)
 
+  // Schedules for test panel
+  const [schedules, setSchedules] = useState<Schedule[]>([])
+
   const fetchExecutions = useCallback(async () => {
     setLoading(true)
     const params = new URLSearchParams()
@@ -105,6 +127,23 @@ export default function ScheduledTasksPage() {
   useEffect(() => {
     fetchExecutions()
   }, [fetchExecutions])
+
+  // Fetch all enabled schedules for testing
+  const fetchSchedules = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/schedules?enabled=true')
+      if (res.ok) {
+        const data = await res.json()
+        setSchedules(data.schedules || [])
+      }
+    } catch (error) {
+      console.error('Fetch schedules error:', error)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchSchedules()
+  }, [fetchSchedules])
 
   async function handleApprove(execution: ScheduleExecution) {
     setActionLoading(execution.id)
@@ -189,6 +228,14 @@ export default function ScheduledTasksPage() {
           </SelectContent>
         </Select>
       </div>
+
+      {/* Test Panel */}
+      {schedules.length > 0 && (
+        <ScheduleTestPanel
+          schedules={schedules}
+          onRefresh={fetchExecutions}
+        />
+      )}
 
       <div className="rounded-md border">
         <Table>
@@ -354,7 +401,7 @@ export default function ScheduledTasksPage() {
 
       {/* Detail Dialog */}
       <Dialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Execution Details</DialogTitle>
             <DialogDescription>
@@ -362,70 +409,7 @@ export default function ScheduledTasksPage() {
             </DialogDescription>
           </DialogHeader>
           {selectedExecution && (
-            <div className="space-y-4 py-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <Label className="text-muted-foreground">Status</Label>
-                  <div>{getStatusBadge(selectedExecution.status)}</div>
-                </div>
-                <div className="space-y-1">
-                  <Label className="text-muted-foreground">Scheduled For</Label>
-                  <p className="text-sm">{format(new Date(selectedExecution.scheduled_for), 'MMM d, yyyy HH:mm:ss')}</p>
-                </div>
-                {selectedExecution.started_at && (
-                  <div className="space-y-1">
-                    <Label className="text-muted-foreground">Started At</Label>
-                    <p className="text-sm">{format(new Date(selectedExecution.started_at), 'MMM d, yyyy HH:mm:ss')}</p>
-                  </div>
-                )}
-                {selectedExecution.completed_at && (
-                  <div className="space-y-1">
-                    <Label className="text-muted-foreground">Completed At</Label>
-                    <p className="text-sm">{format(new Date(selectedExecution.completed_at), 'MMM d, yyyy HH:mm:ss')}</p>
-                  </div>
-                )}
-                {selectedExecution.duration_ms && (
-                  <div className="space-y-1">
-                    <Label className="text-muted-foreground">Duration</Label>
-                    <p className="text-sm">{(selectedExecution.duration_ms / 1000).toFixed(2)}s</p>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label className="text-muted-foreground">Task Prompt</Label>
-                <div className="p-3 bg-muted rounded-md text-sm whitespace-pre-wrap">
-                  {selectedExecution.schedule?.task_prompt || 'No task prompt'}
-                </div>
-              </div>
-
-              {selectedExecution.result && (
-                <div className="space-y-2">
-                  <Label className="text-muted-foreground">Result</Label>
-                  <div className="p-3 bg-muted rounded-md text-sm overflow-auto max-h-48">
-                    <pre>{JSON.stringify(selectedExecution.result, null, 2)}</pre>
-                  </div>
-                </div>
-              )}
-
-              {selectedExecution.error_message && (
-                <div className="space-y-2">
-                  <Label className="text-destructive">Error</Label>
-                  <div className="p-3 bg-destructive/10 rounded-md text-sm text-destructive">
-                    {selectedExecution.error_message}
-                  </div>
-                </div>
-              )}
-
-              {selectedExecution.rejection_reason && (
-                <div className="space-y-2">
-                  <Label className="text-muted-foreground">Rejection Reason</Label>
-                  <div className="p-3 bg-muted rounded-md text-sm">
-                    {selectedExecution.rejection_reason}
-                  </div>
-                </div>
-              )}
-            </div>
+            <ExecutionDetails execution={selectedExecution} />
           )}
           <DialogFooter>
             <Button variant="outline" onClick={() => setDetailDialogOpen(false)}>

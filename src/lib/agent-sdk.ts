@@ -143,6 +143,14 @@ function compileSystemPrompt(
     parts.push(basePrompt)
   }
 
+  // Add data efficiency guidelines for all agents
+  parts.push(`## Data Efficiency Guidelines
+- When listing data, ALWAYS use limit parameter (max 20 items)
+- Filter by status (active, todo, in_progress) to exclude archived/completed
+- Use date filters for recent activity (last 7 days for summaries)
+- Fetch full details only when user asks about specific items
+- Prefer specialized tools (task_get_overdue) over generic list + filter`)
+
   // Add mind organized by content type
   if (mind.length > 0) {
     parts.push('\n## Mind')
@@ -315,6 +323,19 @@ export function estimatePromptTokens(config: AgentSDKConfig): number {
   // Rough estimate: ~4 characters per token
   const promptLength = config.systemPrompt.length
   return Math.ceil(promptLength / 4)
+}
+
+/**
+ * Calculate approximate token count for tools
+ * Each tool includes: name (~10 tokens) + description (~30 tokens) + schema (variable)
+ */
+export function estimateToolTokens(tools: SDKTool[]): number {
+  return tools.reduce((total, tool) => {
+    const nameTokens = Math.ceil(tool.name.length / 4)
+    const descriptionTokens = Math.ceil((tool.description?.length || 0) / 4)
+    const schemaTokens = Math.ceil(JSON.stringify(tool.input_schema).length / 4)
+    return total + nameTokens + descriptionTokens + schemaTokens
+  }, 0)
 }
 
 /**

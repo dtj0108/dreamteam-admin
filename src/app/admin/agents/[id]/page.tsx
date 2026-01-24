@@ -71,6 +71,7 @@ import {
   Bot,
   Loader2,
   ChevronRight,
+  ChevronDown,
   Calendar,
   Clock,
   CheckCircle,
@@ -80,7 +81,8 @@ import {
   Building2,
   Building,
   Sparkles,
-  Lock
+  Lock,
+  FileCheck
 } from 'lucide-react'
 import type {
   AgentWithRelations,
@@ -96,8 +98,12 @@ import type {
   AgentTestSession,
   AgentTestMessage,
   AgentSchedule,
-  AgentScheduleExecution
+  AgentScheduleExecution,
+  ToolValidationResult,
+  ProductionTestResult,
+  MCPTestResult
 } from '@/types/agents'
+import { validateToolSchemas, getValidationSummary, getProductionTestSummary, getMCPTestSummary } from '@/lib/tool-schema-validator'
 import { SCHEDULE_PRESETS, EXECUTION_STATUS_LABELS } from '@/types/agents'
 import { describeCron } from '@/lib/cron-utils'
 
@@ -206,6 +212,12 @@ export default function AgentBuilderPage() {
   const [agent, setAgent] = useState<AgentWithRelations | null>(null)
   const [versions, setVersions] = useState<AgentVersion[]>([])
   const [sdkConfig, setSdkConfig] = useState<AgentSDKConfig | null>(null)
+  const [tokenEstimates, setTokenEstimates] = useState<{
+    systemPrompt: number
+    tools: number
+    total: number
+    toolCount: number
+  } | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -233,6 +245,23 @@ export default function AgentBuilderPage() {
   const [selectedToolIds, setSelectedToolIds] = useState<Set<string>>(new Set())
   const [toolSearch, setToolSearch] = useState('')
   const [toolCategory, setToolCategory] = useState<string>('all')
+
+  // Tool validation state
+  const [validationResults, setValidationResults] = useState<ToolValidationResult[]>([])
+  const [isValidating, setIsValidating] = useState(false)
+  const [showValidation, setShowValidation] = useState(false)
+
+  // Production test state (Claude API invocation tests)
+  const [productionResults, setProductionResults] = useState<ProductionTestResult[]>([])
+  const [isProductionTesting, setIsProductionTesting] = useState(false)
+  const [productionProgress, setProductionProgress] = useState<{ completed: number; total: number }>({ completed: 0, total: 0 })
+
+  // MCP execution test state (real tool execution via MCP server)
+  const [mcpTestResults, setMcpTestResults] = useState<MCPTestResult[]>([])
+  const [isMcpTesting, setIsMcpTesting] = useState(false)
+  const [mcpTestProgress, setMcpTestProgress] = useState<{ completed: number; total: number }>({ completed: 0, total: 0 })
+  const [testWorkspaceId, setTestWorkspaceId] = useState<string>('')
+  const [workspaces, setWorkspaces] = useState<{ id: string; name: string; slug: string }[]>([])
 
   // Skills tab state
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(new Set())
@@ -291,6 +320,7 @@ export default function AgentBuilderPage() {
       setAgent(data.agent)
       setVersions(data.versions || [])
       setSdkConfig(data.sdkConfig)
+      setTokenEstimates(data.tokenEstimates || null)
 
       // Set form values
       setName(data.agent.name)
@@ -376,6 +406,23 @@ export default function AgentBuilderPage() {
     }
   }, [id])
 
+  // Fetch workspaces for MCP testing
+  const fetchWorkspaces = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/workspaces?limit=100')
+      if (res.ok) {
+        const data = await res.json()
+        setWorkspaces((data.workspaces || []).map((w: { id: string; name: string; slug: string }) => ({
+          id: w.id,
+          name: w.name,
+          slug: w.slug
+        })))
+      }
+    } catch (err) {
+      console.error('Error fetching workspaces:', err)
+    }
+  }, [])
+
   // Fetch plans
   const fetchPlans = useCallback(async () => {
     const res = await fetch('/api/admin/plans')
@@ -435,7 +482,8 @@ export default function AgentBuilderPage() {
     fetchSchedules()
     fetchMind()
     fetchPlans()
-  }, [fetchAgent, fetchTools, fetchSkills, fetchAgents, fetchSchedules, fetchMind, fetchPlans])
+    fetchWorkspaces()
+  }, [fetchAgent, fetchTools, fetchSkills, fetchAgents, fetchSchedules, fetchMind, fetchPlans, fetchWorkspaces])
 
   useEffect(() => {
     if (agent) {
@@ -1153,6 +1201,23 @@ export default function AgentBuilderPage() {
                       Save Tools
                     </Button>
                   </div>
+                  {tokenEstimates && selectedToolIds.size > 30 && (
+                    <div className="mt-3 flex items-start gap-2 p-3 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
+                      <AlertCircle className="h-5 w-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                      <div className="text-sm">
+                        <p className="font-medium text-amber-800 dark:text-amber-200">High tool count detected</p>
+                        <p className="text-amber-700 dark:text-amber-300">
+                          This agent has {selectedToolIds.size} tools assigned, estimated at ~{tokenEstimates.tools.toLocaleString()} tokens per message.
+                          Consider reducing tools for cost efficiency. Agents with 20-30 tools typically perform better.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  {tokenEstimates && (
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      Token estimates: ~{tokenEstimates.tools.toLocaleString()} for tools, ~{tokenEstimates.systemPrompt.toLocaleString()} for prompt, ~{tokenEstimates.total.toLocaleString()} total base cost per message
+                    </div>
+                  )}
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="flex gap-4">
@@ -1207,6 +1272,528 @@ export default function AgentBuilderPage() {
                       ))}
                     </div>
                   </ScrollArea>
+
+                  {/* Schema Validation Section */}
+                  <div className="mt-4 border rounded-md">
+                    <button
+                      type="button"
+                      className="w-full flex items-center justify-between p-3 hover:bg-muted/50 transition-colors"
+                      onClick={() => setShowValidation(!showValidation)}
+                    >
+                      <div className="flex items-center gap-2">
+                        <FileCheck className="h-4 w-4" />
+                        <span className="font-medium">Schema Validation</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={selectedToolIds.size === 0 || isValidating}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setIsValidating(true)
+                            const selectedTools = allTools.filter(t => selectedToolIds.has(t.id))
+                            const results = validateToolSchemas(selectedTools)
+                            setValidationResults(results)
+                            setShowValidation(true)
+                            setIsValidating(false)
+                          }}
+                        >
+                          {isValidating ? (
+                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                          ) : (
+                            <FileCheck className="h-3 w-3 mr-1" />
+                          )}
+                          Validate Schema
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={selectedToolIds.size === 0 || isProductionTesting}
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            setIsProductionTesting(true)
+                            setProductionResults([])
+                            setProductionProgress({ completed: 0, total: selectedToolIds.size })
+                            setShowValidation(true)
+
+                            try {
+                              const response = await fetch('/api/admin/agents/tools/test', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ tool_ids: Array.from(selectedToolIds) })
+                              })
+                              const data = await response.json()
+                              if (data.results) {
+                                setProductionResults(data.results)
+                                setProductionProgress({ completed: data.results.length, total: data.results.length })
+                              } else if (data.error) {
+                                console.error('Production test error:', data.error)
+                              }
+                            } catch (err) {
+                              console.error('Production test failed:', err)
+                            } finally {
+                              setIsProductionTesting(false)
+                            }
+                          }}
+                        >
+                          {isProductionTesting ? (
+                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                          ) : (
+                            <Play className="h-3 w-3 mr-1" />
+                          )}
+                          {isProductionTesting
+                            ? `Testing ${productionProgress.completed}/${productionProgress.total}...`
+                            : 'Run Production Test'}
+                        </Button>
+                        {showValidation ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </div>
+                    </button>
+
+                    {showValidation && (
+                      <div className="border-t p-4 space-y-4">
+                        {validationResults.length === 0 ? (
+                          <p className="text-sm text-muted-foreground text-center py-4">
+                            Click &quot;Validate Tools&quot; to check selected tools for schema issues
+                          </p>
+                        ) : (
+                          <>
+                            {/* Summary badges */}
+                            <div className="flex items-center gap-2">
+                              {(() => {
+                                const summary = getValidationSummary(validationResults)
+                                return (
+                                  <>
+                                    <Badge variant="outline" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                                      <CheckCircle className="h-3 w-3 mr-1" />
+                                      {summary.passed} Passed
+                                    </Badge>
+                                    {summary.withWarnings > 0 && (
+                                      <Badge variant="outline" className="bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                                        <AlertCircle className="h-3 w-3 mr-1" />
+                                        {summary.withWarnings} Warnings
+                                      </Badge>
+                                    )}
+                                    {summary.failed > 0 && (
+                                      <Badge variant="outline" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                                        <XCircle className="h-3 w-3 mr-1" />
+                                        {summary.failed} Errors
+                                      </Badge>
+                                    )}
+                                  </>
+                                )
+                              })()}
+                            </div>
+
+                            {/* Results table */}
+                            <Table>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead>Tool Name</TableHead>
+                                  <TableHead className="w-[100px]">Status</TableHead>
+                                  <TableHead>Issues</TableHead>
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {validationResults.map(result => (
+                                  <TableRow key={result.toolId}>
+                                    <TableCell className="font-medium">{result.toolName}</TableCell>
+                                    <TableCell>
+                                      {result.isValid && result.warnings.length === 0 ? (
+                                        <CheckCircle className="h-4 w-4 text-green-600" />
+                                      ) : result.isValid && result.warnings.length > 0 ? (
+                                        <AlertCircle className="h-4 w-4 text-amber-600" />
+                                      ) : (
+                                        <XCircle className="h-4 w-4 text-red-600" />
+                                      )}
+                                    </TableCell>
+                                    <TableCell>
+                                      {result.errors.length === 0 && result.warnings.length === 0 ? (
+                                        <span className="text-muted-foreground">-</span>
+                                      ) : (
+                                        <div className="space-y-1">
+                                          {result.errors.map((err, i) => (
+                                            <div key={`err-${i}`} className="text-xs text-red-600">
+                                              <span className="font-medium">{err.field}:</span> {err.message}
+                                            </div>
+                                          ))}
+                                          {result.warnings.map((warn, i) => (
+                                            <div key={`warn-${i}`} className="text-xs text-amber-600">
+                                              <span className="font-medium">{warn.field}:</span> {warn.message}
+                                              {warn.recommendation && (
+                                                <span className="text-muted-foreground block ml-4 italic">
+                                                  {warn.recommendation}
+                                                </span>
+                                              )}
+                                            </div>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </TableCell>
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </Table>
+                          </>
+                        )}
+
+                        {/* Production Test Results */}
+                        {(productionResults.length > 0 || isProductionTesting) && (
+                          <div className="mt-6 pt-6 border-t">
+                            <div className="flex items-center justify-between mb-4">
+                              <h4 className="font-medium flex items-center gap-2">
+                                <Play className="h-4 w-4" />
+                                Production Test Results
+                              </h4>
+                              {isProductionTesting && (
+                                <span className="text-sm text-muted-foreground">
+                                  Testing {productionProgress.completed}/{productionProgress.total} tools...
+                                </span>
+                              )}
+                            </div>
+
+                            {productionResults.length > 0 && (
+                              <>
+                                {/* Summary badges */}
+                                <div className="flex items-center gap-2 mb-4">
+                                  {(() => {
+                                    const summary = getProductionTestSummary(productionResults)
+                                    const failures = productionResults.filter(r => !r.success)
+                                    return (
+                                      <>
+                                        <Badge variant="outline" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                                          <CheckCircle className="h-3 w-3 mr-1" />
+                                          {summary.passed} Passed
+                                        </Badge>
+                                        {summary.failed > 0 && (
+                                          <Badge variant="outline" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                                            <XCircle className="h-3 w-3 mr-1" />
+                                            {summary.failed} Failed
+                                          </Badge>
+                                        )}
+                                        {failures.length > 0 && (
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            className="ml-2 h-6 text-xs"
+                                            onClick={() => {
+                                              const failureData = failures.map(f => ({
+                                                toolId: f.toolId,
+                                                toolName: f.toolName,
+                                                success: f.success,
+                                                toolUseReturned: f.toolUseReturned,
+                                                inputValid: f.inputValid,
+                                                latencyMs: f.latencyMs,
+                                                error: f.error,
+                                                toolInput: f.toolInput
+                                              }))
+                                              navigator.clipboard.writeText(JSON.stringify(failureData, null, 2))
+                                            }}
+                                          >
+                                            <Copy className="h-3 w-3 mr-1" />
+                                            Copy Failures JSON
+                                          </Button>
+                                        )}
+                                      </>
+                                    )
+                                  })()}
+                                </div>
+
+                                {/* Results table */}
+                                <Table>
+                                  <TableHeader>
+                                    <TableRow>
+                                      <TableHead>Tool Name</TableHead>
+                                      <TableHead className="w-[80px]">Invoked</TableHead>
+                                      <TableHead className="w-[80px]">Valid Input</TableHead>
+                                      <TableHead className="w-[80px]">Latency</TableHead>
+                                      <TableHead>Error</TableHead>
+                                    </TableRow>
+                                  </TableHeader>
+                                  <TableBody>
+                                    {productionResults.map(result => (
+                                      <TableRow key={result.toolId}>
+                                        <TableCell className="font-medium">{result.toolName}</TableCell>
+                                        <TableCell>
+                                          {result.toolUseReturned ? (
+                                            <CheckCircle className="h-4 w-4 text-green-600" />
+                                          ) : (
+                                            <XCircle className="h-4 w-4 text-red-600" />
+                                          )}
+                                        </TableCell>
+                                        <TableCell>
+                                          {result.toolUseReturned ? (
+                                            result.inputValid ? (
+                                              <CheckCircle className="h-4 w-4 text-green-600" />
+                                            ) : (
+                                              <XCircle className="h-4 w-4 text-red-600" />
+                                            )
+                                          ) : (
+                                            <span className="text-muted-foreground">-</span>
+                                          )}
+                                        </TableCell>
+                                        <TableCell>
+                                          <span className="text-sm text-muted-foreground">
+                                            {result.latencyMs}ms
+                                          </span>
+                                        </TableCell>
+                                        <TableCell>
+                                          {result.error ? (
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-xs text-red-600 flex-1">{result.error}</span>
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                className="h-6 w-6 p-0 shrink-0"
+                                                onClick={() => {
+                                                  const resultData = {
+                                                    toolId: result.toolId,
+                                                    toolName: result.toolName,
+                                                    success: result.success,
+                                                    toolUseReturned: result.toolUseReturned,
+                                                    inputValid: result.inputValid,
+                                                    latencyMs: result.latencyMs,
+                                                    error: result.error,
+                                                    toolInput: result.toolInput
+                                                  }
+                                                  navigator.clipboard.writeText(JSON.stringify(resultData, null, 2))
+                                                }}
+                                                title="Copy JSON"
+                                              >
+                                                <Copy className="h-3 w-3" />
+                                              </Button>
+                                            </div>
+                                          ) : (
+                                            <span className="text-muted-foreground">-</span>
+                                          )}
+                                        </TableCell>
+                                      </TableRow>
+                                    ))}
+                                  </TableBody>
+                                </Table>
+                              </>
+                            )}
+
+                            {isProductionTesting && productionResults.length === 0 && (
+                              <div className="flex items-center justify-center py-8">
+                                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                                <span className="ml-2 text-muted-foreground">Running production tests...</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* MCP Execution Test Section */}
+                        <div className="mt-6 pt-6 border-t">
+                          <div className="flex items-center justify-between mb-4">
+                            <h4 className="font-medium flex items-center gap-2">
+                              <Wrench className="h-4 w-4" />
+                              MCP Execution Test
+                              <Badge variant="outline" className="text-xs font-normal">Real Tool Execution</Badge>
+                            </h4>
+                          </div>
+                          <p className="text-sm text-muted-foreground mb-4">
+                            Test tools by executing them on the MCP server with real database operations. Select a workspace context for the test.
+                          </p>
+
+                          <div className="flex items-center gap-2 mb-4">
+                            <Select value={testWorkspaceId} onValueChange={setTestWorkspaceId}>
+                              <SelectTrigger className="w-[280px]">
+                                <SelectValue placeholder="Select workspace for testing" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {workspaces.map(ws => (
+                                  <SelectItem key={ws.id} value={ws.id}>
+                                    {ws.name} ({ws.slug})
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                            <Button
+                              variant="default"
+                              size="sm"
+                              disabled={selectedToolIds.size === 0 || isMcpTesting || !testWorkspaceId}
+                              onClick={async () => {
+                                if (!testWorkspaceId) {
+                                  return
+                                }
+                                setIsMcpTesting(true)
+                                setMcpTestResults([])
+                                setMcpTestProgress({ completed: 0, total: selectedToolIds.size })
+
+                                try {
+                                  const response = await fetch('/api/admin/agents/tools/test-production', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      tool_ids: Array.from(selectedToolIds),
+                                      workspace_id: testWorkspaceId
+                                    })
+                                  })
+                                  const data = await response.json()
+                                  if (data.results) {
+                                    setMcpTestResults(data.results)
+                                    setMcpTestProgress({ completed: data.results.length, total: data.results.length })
+                                  } else if (data.error) {
+                                    console.error('MCP test error:', data.error)
+                                  }
+                                } catch (err) {
+                                  console.error('MCP test failed:', err)
+                                } finally {
+                                  setIsMcpTesting(false)
+                                }
+                              }}
+                            >
+                              {isMcpTesting ? (
+                                <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                              ) : (
+                                <Wrench className="h-3 w-3 mr-1" />
+                              )}
+                              {isMcpTesting
+                                ? `Testing ${mcpTestProgress.completed}/${mcpTestProgress.total}...`
+                                : 'Run MCP Test'}
+                            </Button>
+                          </div>
+
+                          {mcpTestResults.length > 0 && (
+                            <>
+                              {/* Summary badges */}
+                              <div className="flex items-center gap-2 mb-4">
+                                {(() => {
+                                  const summary = getMCPTestSummary(mcpTestResults)
+                                  const failures = mcpTestResults.filter(r => !r.success)
+                                  return (
+                                    <>
+                                      <Badge variant="outline" className="bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200">
+                                        <CheckCircle className="h-3 w-3 mr-1" />
+                                        {summary.passed} Passed
+                                      </Badge>
+                                      {summary.failed > 0 && (
+                                        <Badge variant="outline" className="bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200">
+                                          <XCircle className="h-3 w-3 mr-1" />
+                                          {summary.failed} Failed
+                                        </Badge>
+                                      )}
+                                      {failures.length > 0 && (
+                                        <Button
+                                          variant="ghost"
+                                          size="sm"
+                                          className="ml-2 h-6 text-xs"
+                                          onClick={() => {
+                                            const failureData = failures.map(f => ({
+                                              toolId: f.toolId,
+                                              toolName: f.toolName,
+                                              success: f.success,
+                                              latencyMs: f.latencyMs,
+                                              error: f.error,
+                                              result: f.result
+                                            }))
+                                            navigator.clipboard.writeText(JSON.stringify(failureData, null, 2))
+                                          }}
+                                        >
+                                          <Copy className="h-3 w-3 mr-1" />
+                                          Copy Failures JSON
+                                        </Button>
+                                      )}
+                                    </>
+                                  )
+                                })()}
+                              </div>
+
+                              {/* Results table */}
+                              <Table>
+                                <TableHeader>
+                                  <TableRow>
+                                    <TableHead>Tool Name</TableHead>
+                                    <TableHead className="w-[80px]">Success</TableHead>
+                                    <TableHead className="w-[80px]">Latency</TableHead>
+                                    <TableHead>Result / Error</TableHead>
+                                  </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                  {mcpTestResults.map(result => (
+                                    <TableRow key={result.toolId}>
+                                      <TableCell className="font-medium">{result.toolName}</TableCell>
+                                      <TableCell>
+                                        {result.success ? (
+                                          <CheckCircle className="h-4 w-4 text-green-600" />
+                                        ) : (
+                                          <XCircle className="h-4 w-4 text-red-600" />
+                                        )}
+                                      </TableCell>
+                                      <TableCell>
+                                        <span className="text-sm text-muted-foreground">
+                                          {result.latencyMs}ms
+                                        </span>
+                                      </TableCell>
+                                      <TableCell>
+                                        {result.error ? (
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-xs text-red-600 flex-1">{result.error}</span>
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              className="h-6 w-6 p-0 shrink-0"
+                                              onClick={() => {
+                                                const resultData = {
+                                                  toolId: result.toolId,
+                                                  toolName: result.toolName,
+                                                  success: result.success,
+                                                  latencyMs: result.latencyMs,
+                                                  error: result.error,
+                                                  result: result.result
+                                                }
+                                                navigator.clipboard.writeText(JSON.stringify(resultData, null, 2))
+                                              }}
+                                              title="Copy JSON"
+                                            >
+                                              <Copy className="h-3 w-3" />
+                                            </Button>
+                                          </div>
+                                        ) : result.result ? (
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-xs text-green-600 flex-1 truncate max-w-[300px]">
+                                              {typeof result.result === 'string'
+                                                ? result.result
+                                                : JSON.stringify(result.result).substring(0, 100)}
+                                            </span>
+                                            <Button
+                                              variant="ghost"
+                                              size="sm"
+                                              className="h-6 w-6 p-0 shrink-0"
+                                              onClick={() => {
+                                                navigator.clipboard.writeText(JSON.stringify(result.result, null, 2))
+                                              }}
+                                              title="Copy Result"
+                                            >
+                                              <Copy className="h-3 w-3" />
+                                            </Button>
+                                          </div>
+                                        ) : (
+                                          <span className="text-muted-foreground">-</span>
+                                        )}
+                                      </TableCell>
+                                    </TableRow>
+                                  ))}
+                                </TableBody>
+                              </Table>
+                            </>
+                          )}
+
+                          {isMcpTesting && mcpTestResults.length === 0 && (
+                            <div className="flex items-center justify-center py-8">
+                              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                              <span className="ml-2 text-muted-foreground">Running MCP execution tests...</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>
@@ -1801,7 +2388,11 @@ export default function AgentBuilderPage() {
                       </TableHeader>
                       <TableBody>
                         {schedules.map((schedule) => (
-                          <TableRow key={schedule.id}>
+                          <TableRow
+                            key={schedule.id}
+                            className="cursor-pointer hover:bg-muted/50"
+                            onClick={() => router.push(`/admin/agents/${id}/schedules/${schedule.id}`)}
+                          >
                             <TableCell>
                               <div>
                                 <div className="font-medium">{schedule.name}</div>
@@ -1843,13 +2434,13 @@ export default function AgentBuilderPage() {
                                 <Badge variant="secondary">Auto</Badge>
                               )}
                             </TableCell>
-                            <TableCell>
+                            <TableCell onClick={(e) => e.stopPropagation()}>
                               <Switch
                                 checked={schedule.is_enabled}
                                 onCheckedChange={(checked) => toggleSchedule(schedule.id, checked)}
                               />
                             </TableCell>
-                            <TableCell className="text-right">
+                            <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                               <div className="flex items-center justify-end gap-2">
                                 <Button
                                   variant="ghost"
