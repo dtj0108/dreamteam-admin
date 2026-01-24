@@ -17,7 +17,10 @@ import { generateAgentSDKConfig, estimateToolTokens } from './agent-sdk'
 import { createAdminClient } from './supabase/admin'
 import { executeToolViaMCP } from './mcp-client'
 import { sendScheduledTaskNotification } from './agent-messaging'
+import { memorize } from './memory-service'
+import { buildMemoryTools, injectMemoryContext } from './memory-tools'
 import type { AgentWithRelations, SDKTool, ToolExecutionContext, AIProvider } from '@/types/agents'
+import type { MemoryContext } from '@/types/memory'
 import { z } from 'zod'
 
 // Maximum characters for tool result content sent to the model
@@ -195,7 +198,9 @@ export interface RunAgentOptions {
   tools?: SDKTool[]
   maxTurns?: number
   context?: ToolExecutionContext
+  agentId?: string // For memory system - associates memories with this agent
   providerConfig?: ProviderConfig
+  enableMemory?: boolean // Enable memory injection and storage (default: true when context has workspaceId)
   onTodoUpdate?: (todos: AgentTodo[]) => void
   onToolCall?: (toolCall: ToolCallRecord) => void
   onMessage?: (role: 'user' | 'assistant', content: string) => void
@@ -359,7 +364,9 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     taskPrompt,
     tools: sdkTools = [],
     maxTurns = 10,
+    agentId,
     providerConfig,
+    enableMemory = true,
     onTodoUpdate,
     onToolCall,
     onMessage,
@@ -395,6 +402,32 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     trackTodoUpdate
   )
 
+  // Build memory context if workspace is available
+  const memoryContext: MemoryContext | null = (enableMemory && options.context?.workspaceId)
+    ? {
+        workspaceId: options.context.workspaceId,
+        userId: options.context.userId,
+        agentId: agentId
+      }
+    : null
+
+  // Add memory tools if memory is enabled
+  if (memoryContext) {
+    const memoryTools = buildMemoryTools(memoryContext)
+    Object.assign(aiTools, memoryTools)
+  }
+
+  // Inject memory context into system prompt
+  let finalSystemPrompt = systemPrompt
+  if (memoryContext) {
+    try {
+      finalSystemPrompt = await injectMemoryContext(systemPrompt, taskPrompt, memoryContext)
+    } catch (error) {
+      console.error('Failed to inject memory context:', error)
+      // Continue without memory injection
+    }
+  }
+
   onMessage?.('user', taskPrompt)
 
   try {
@@ -419,7 +452,7 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
     // Use AI SDK generateText with automatic tool loop
     const result = await generateText({
       model: getModelInstance(provider, modelId),
-      system: systemPrompt,
+      system: finalSystemPrompt,
       prompt: taskPrompt,
       tools: aiTools,
       maxSteps: maxTurns,
@@ -457,6 +490,30 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       ...(provider === 'anthropic' && { cacheCreationTokens, cacheReadTokens }),
       toolCallsCount: toolCalls.length,
     })
+
+    // Store episode for memory extraction (async, non-blocking)
+    if (memoryContext) {
+      memorize('conversation', {
+        taskPrompt,
+        result: finalResult,
+        model: modelId,
+        provider,
+        toolCalls: toolCalls.map(tc => ({
+          name: tc.name,
+          input: tc.input,
+          // Don't store full output to save space
+          success: tc.output && typeof tc.output === 'object' && 'success' in tc.output
+            ? (tc.output as { success?: boolean }).success ?? true
+            : true
+        })),
+        usage: {
+          inputTokens: usage.promptTokens,
+          outputTokens: usage.completionTokens
+        }
+      }, memoryContext).catch(error => {
+        console.error('Failed to store memory episode:', error)
+      })
+    }
 
     return {
       success: true,
@@ -554,7 +611,7 @@ export async function runAgentById(
   // Generate SDK config
   const sdkConfig = generateAgentSDKConfig(agent as AgentWithRelations)
 
-  // Run the agent
+  // Run the agent with agentId for memory system
   return runAgent({
     model: sdkConfig.model,
     systemPrompt: sdkConfig.systemPrompt,
@@ -562,6 +619,7 @@ export async function runAgentById(
     tools: sdkConfig.tools,
     maxTurns: options?.maxTurns ?? sdkConfig.maxTurns,
     context: options?.context,
+    agentId: agentId,
     onTodoUpdate: options?.onTodoUpdate,
     onToolCall: options?.onToolCall,
     onMessage: options?.onMessage,
@@ -799,6 +857,25 @@ You have access to this user's data within this workspace. Do NOT ask the user f
     systemPrompt = contextSection + '\n\n' + systemPrompt
   }
 
+  // Build memory context for chat
+  const memoryContext: MemoryContext | null = context?.workspaceId
+    ? {
+        workspaceId: context.workspaceId,
+        userId: context.userId,
+        agentId: agentId
+      }
+    : null
+
+  // Inject memory context into system prompt
+  if (memoryContext) {
+    try {
+      systemPrompt = await injectMemoryContext(systemPrompt, userMessage, memoryContext)
+    } catch (error) {
+      console.error('Failed to inject memory context for chat:', error)
+      // Continue without memory injection
+    }
+  }
+
   // Build messages with conversation history for AI SDK
   const messages: CoreMessage[] = []
 
@@ -816,6 +893,20 @@ You have access to this user's data within this workspace. Do NOT ask the user f
     system: systemPrompt,
     messages,
   })
+
+  // Store chat episode for memory extraction (async, non-blocking)
+  if (memoryContext) {
+    memorize('conversation', {
+      channelId,
+      userMessage,
+      response: result.text,
+      conversationHistoryLength: conversationHistory?.length || 0,
+      model: sdkConfig.model,
+      provider
+    }, memoryContext).catch(error => {
+      console.error('Failed to store chat memory episode:', error)
+    })
+  }
 
   return {
     response: result.text,
