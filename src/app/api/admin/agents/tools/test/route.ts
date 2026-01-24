@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireSuperadmin } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { runProductionTests } from '@/lib/tool-schema-validator'
-import type { AgentTool } from '@/types/agents'
+import { runProductionTests, getProviderApiKey } from '@/lib/tool-schema-validator'
+import type { AgentTool, AIProvider, AgentModel } from '@/types/agents'
 
 // POST /api/admin/agents/tools/test - Run production tests on selected tools
 export async function POST(request: NextRequest) {
@@ -10,7 +10,11 @@ export async function POST(request: NextRequest) {
   if (error) return error
 
   const body = await request.json()
-  const { tool_ids } = body as { tool_ids: string[] }
+  const { tool_ids, provider = 'anthropic', model } = body as {
+    tool_ids: string[]
+    provider?: AIProvider
+    model?: AgentModel
+  }
 
   if (!Array.isArray(tool_ids) || tool_ids.length === 0) {
     return NextResponse.json(
@@ -41,18 +45,26 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  // Get the Anthropic API key from environment
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  // Get the API key from database (encrypted storage) or fall back to env var
+  let apiKey = await getProviderApiKey(provider)
+
+  // Fall back to environment variable if not configured in database
+  if (!apiKey) {
+    apiKey = provider === 'xai'
+      ? process.env.XAI_API_KEY || null
+      : process.env.ANTHROPIC_API_KEY || null
+  }
+
   if (!apiKey) {
     return NextResponse.json(
-      { error: 'Anthropic API key not configured' },
+      { error: `${provider === 'xai' ? 'xAI' : 'Anthropic'} API key not configured. Configure it in Model Providers settings.` },
       { status: 500 }
     )
   }
 
   // Run the production tests
   try {
-    const results = await runProductionTests(tools as AgentTool[], apiKey)
+    const results = await runProductionTests(tools as AgentTool[], apiKey, provider, model)
     return NextResponse.json({ results })
   } catch (err) {
     console.error('Production test error:', err)

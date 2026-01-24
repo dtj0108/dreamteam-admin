@@ -4,13 +4,16 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createXai } from '@ai-sdk/xai'
 import type { AIProvider } from '@/types/agents'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { decryptApiKey } from '@/lib/encryption'
 
-// Lazy-initialized provider instances
+// Lazy-initialized provider instances (for backward compatibility with env vars)
 let anthropicInstance: ReturnType<typeof createAnthropic> | null = null
 let xaiInstance: ReturnType<typeof createXai> | null = null
 
 /**
- * Get a provider instance by type (lazy initialization)
+ * Get a provider instance by type (lazy initialization with env var)
+ * @deprecated Use getProviderWithDbKey for production use
  */
 export function getProvider(provider: AIProvider) {
   switch (provider) {
@@ -34,10 +37,82 @@ export function getProvider(provider: AIProvider) {
 }
 
 /**
+ * Get a provider instance with a specific API key (no caching)
+ */
+export function getProviderWithApiKey(provider: AIProvider, apiKey: string) {
+  switch (provider) {
+    case 'anthropic':
+      return createAnthropic({ apiKey })
+    case 'xai':
+      return createXai({ apiKey })
+    default:
+      throw new Error(`Unknown provider: ${provider}`)
+  }
+}
+
+/**
+ * Get a provider instance with API key from database, falling back to env var
+ */
+export async function getProviderWithDbKey(provider: AIProvider) {
+  // Try to get API key from database
+  const dbApiKey = await getApiKeyFromDb(provider)
+
+  if (dbApiKey) {
+    return getProviderWithApiKey(provider, dbApiKey)
+  }
+
+  // Fall back to env var
+  const envKey = provider === 'anthropic'
+    ? process.env.ANTHROPIC_API_KEY
+    : process.env.XAI_API_KEY
+
+  if (!envKey) {
+    throw new Error(`No API key configured for provider ${provider}. Configure it in Model Providers settings.`)
+  }
+
+  return getProviderWithApiKey(provider, envKey)
+}
+
+/**
+ * Fetches and decrypts the API key for a provider from the database
+ */
+async function getApiKeyFromDb(provider: AIProvider): Promise<string | null> {
+  try {
+    const supabase = createAdminClient()
+
+    const { data, error } = await supabase
+      .from('model_provider_configs')
+      .select('api_key_encrypted, is_enabled')
+      .eq('provider', provider)
+      .single()
+
+    if (error || !data) {
+      return null
+    }
+
+    if (!data.is_enabled || !data.api_key_encrypted) {
+      return null
+    }
+
+    return decryptApiKey(data.api_key_encrypted)
+  } catch {
+    return null
+  }
+}
+
+/**
  * Get a model instance for a given provider and model ID
  */
 export function getModelInstance(provider: AIProvider, modelId: string) {
   return getProvider(provider)(modelId)
+}
+
+/**
+ * Get a model instance with API key from database
+ */
+export async function getModelInstanceWithDbKey(provider: AIProvider, modelId: string) {
+  const providerInstance = await getProviderWithDbKey(provider)
+  return providerInstance(modelId)
 }
 
 // Keep backward compatibility - export anthropic instance directly

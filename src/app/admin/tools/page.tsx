@@ -29,16 +29,8 @@ import {
   BookOpen,
   Phone,
   TrendingUp,
-  Bot,
-  Loader2
+  Bot
 } from 'lucide-react'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
 
 interface Tool {
   id: string
@@ -59,20 +51,6 @@ interface DepartmentConfig {
   expectedCount: number
 }
 
-interface MCPTestResult {
-  toolId: string
-  toolName: string
-  success: boolean
-  result?: unknown
-  error?: string
-  latencyMs: number
-}
-
-interface Workspace {
-  id: string
-  name: string
-}
-
 const departments: DepartmentConfig[] = [
   { key: 'finance', label: 'Finance', icon: DollarSign, color: 'text-green-600', expectedCount: 62 },
   { key: 'crm', label: 'CRM', icon: Target, color: 'text-blue-600', expectedCount: 53 },
@@ -90,12 +68,6 @@ export default function ToolsPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [expandedDepartments, setExpandedDepartments] = useState<Set<string>>(new Set())
 
-  // MCP Test State
-  const [testResults, setTestResults] = useState<Record<string, MCPTestResult[]>>({})
-  const [testingDepartment, setTestingDepartment] = useState<string | null>(null)
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string>('')
-
   const fetchTools = useCallback(async () => {
     const res = await fetch('/api/admin/agent-tools')
     if (res.ok) {
@@ -105,18 +77,9 @@ export default function ToolsPage() {
     setLoading(false)
   }, [])
 
-  const fetchWorkspaces = useCallback(async () => {
-    const res = await fetch('/api/admin/workspaces?limit=100')
-    if (res.ok) {
-      const data = await res.json()
-      setWorkspaces(data.workspaces || [])
-    }
-  }, [])
-
   useEffect(() => {
     fetchTools()
-    fetchWorkspaces()
-  }, [fetchTools, fetchWorkspaces])
+  }, [fetchTools])
 
   async function handleToggleEnabled(tool: Tool) {
     const res = await fetch(`/api/admin/agent-tools/${tool.id}`, {
@@ -128,37 +91,6 @@ export default function ToolsPage() {
     if (res.ok) {
       fetchTools()
     }
-  }
-
-  async function runDepartmentTest(department: string) {
-    if (!selectedWorkspaceId) return
-    setTestingDepartment(department)
-
-    const deptTools = tools.filter(t => t.category === department && t.is_enabled)
-
-    if (deptTools.length === 0) {
-      setTestingDepartment(null)
-      return
-    }
-
-    try {
-      const res = await fetch('/api/admin/agents/tools/test-production', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tool_ids: deptTools.map(t => t.id),
-          workspace_id: selectedWorkspaceId
-        })
-      })
-
-      if (res.ok) {
-        const data = await res.json()
-        setTestResults(prev => ({ ...prev, [department]: data.results }))
-      }
-    } catch (err) {
-      console.error('Test failed:', err)
-    }
-    setTestingDepartment(null)
   }
 
   const filteredTools = useMemo(() => {
@@ -223,16 +155,6 @@ export default function ToolsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Select value={selectedWorkspaceId} onValueChange={setSelectedWorkspaceId}>
-            <SelectTrigger className="w-[200px]">
-              <SelectValue placeholder="Select workspace..." />
-            </SelectTrigger>
-            <SelectContent>
-              {workspaces.map(ws => (
-                <SelectItem key={ws.id} value={ws.id}>{ws.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
           <Button variant="outline" size="sm" onClick={expandAll}>
             Expand All
           </Button>
@@ -378,96 +300,44 @@ export default function ToolsPage() {
                             {deptTools.length} tools
                           </Badge>
                         </CardTitle>
-                        <div className="flex items-center gap-4">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={!selectedWorkspaceId || testingDepartment === dept.key}
-                            onClick={(e) => {
-                              e.stopPropagation()
-                              runDepartmentTest(dept.key)
-                            }}
-                          >
-                            {testingDepartment === dept.key ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              'Test'
-                            )}
-                          </Button>
-                          <div className="text-sm text-muted-foreground">
-                            {stats.enabled} / {stats.total} enabled
-                          </div>
+                        <div className="text-sm text-muted-foreground">
+                          {stats.enabled} / {stats.total} enabled
                         </div>
                       </div>
                     </CardHeader>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
                     <CardContent className="pt-0">
-                      {/* Test Results Summary */}
-                      {testResults[dept.key] && testResults[dept.key].length > 0 && (
-                        <div className="mb-4 p-3 bg-muted rounded">
-                          {(() => {
-                            const results = testResults[dept.key]
-                            const passed = results.filter(r => r.success).length
-                            const failed = results.filter(r => !r.success).length
-                            const avgLatency = Math.round(
-                              results.reduce((sum, r) => sum + r.latencyMs, 0) / results.length
-                            )
-                            return (
-                              <span className="text-sm">
-                                <span className="text-green-600 font-medium">{passed} passed</span>
-                                {', '}
-                                <span className="text-red-600 font-medium">{failed} failed</span>
-                                {' '}
-                                <span className="text-muted-foreground">({avgLatency}ms avg)</span>
-                              </span>
-                            )
-                          })()}
-                        </div>
-                      )}
                       {deptTools.length === 0 ? (
                         <p className="text-center text-muted-foreground py-4">
                           No tools in this department. Run the migration to seed them.
                         </p>
                       ) : (
                         <div className="divide-y">
-                          {deptTools.map(tool => {
-                            const testResult = testResults[dept.key]?.find(r => r.toolId === tool.id)
-                            return (
-                              <div
-                                key={tool.id}
-                                className="flex items-center justify-between py-3"
-                              >
-                                <div className="flex-1 min-w-0">
-                                  <p className="font-mono text-sm font-medium">
-                                    {tool.name}
-                                  </p>
-                                  <p className="text-sm text-muted-foreground truncate">
-                                    {tool.description || 'No description'}
-                                  </p>
-                                  {testResult && !testResult.success && testResult.error && (
-                                    <p className="text-xs text-red-500 mt-1 truncate" title={testResult.error}>
-                                      {testResult.error}
-                                    </p>
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-4 ml-4">
-                                  {testResult && (
-                                    <Badge variant={testResult.success ? 'default' : 'destructive'}>
-                                      {testResult.success ? 'Pass' : 'Fail'}
-                                    </Badge>
-                                  )}
-                                  <Badge variant={tool.is_enabled ? 'default' : 'secondary'}>
-                                    {tool.is_enabled ? 'Enabled' : 'Disabled'}
-                                  </Badge>
-                                  <Switch
-                                    checked={tool.is_enabled}
-                                    onCheckedChange={() => handleToggleEnabled(tool)}
-                                  />
-                                </div>
+                          {deptTools.map(tool => (
+                            <div
+                              key={tool.id}
+                              className="flex items-center justify-between py-3"
+                            >
+                              <div className="flex-1 min-w-0">
+                                <p className="font-mono text-sm font-medium">
+                                  {tool.name}
+                                </p>
+                                <p className="text-sm text-muted-foreground truncate">
+                                  {tool.description || 'No description'}
+                                </p>
                               </div>
-                            )
-                          })}
+                              <div className="flex items-center gap-4 ml-4">
+                                <Badge variant={tool.is_enabled ? 'default' : 'secondary'}>
+                                  {tool.is_enabled ? 'Enabled' : 'Disabled'}
+                                </Badge>
+                                <Switch
+                                  checked={tool.is_enabled}
+                                  onCheckedChange={() => handleToggleEnabled(tool)}
+                                />
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </CardContent>

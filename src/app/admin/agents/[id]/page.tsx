@@ -62,18 +62,15 @@ import {
   Plus,
   Trash2,
   GripVertical,
-  Send,
   History,
   Upload,
   Download,
   Check,
   Copy,
-  Bot,
   Loader2,
   ChevronRight,
   ChevronDown,
   Calendar,
-  Clock,
   CheckCircle,
   XCircle,
   AlertCircle,
@@ -96,8 +93,6 @@ import type {
   AgentModel,
   AIProvider,
   PermissionMode,
-  AgentTestSession,
-  AgentTestMessage,
   AgentSchedule,
   AgentScheduleExecution,
   ToolValidationResult,
@@ -308,12 +303,6 @@ export default function AgentBuilderPage() {
 
   // Team tab state
   const [delegations, setDelegations] = useState<{ to_agent_id: string; condition: string; context_template: string }[]>([])
-
-  // Test tab state
-  const [testSession, setTestSession] = useState<AgentTestSession | null>(null)
-  const [testMessages, setTestMessages] = useState<AgentTestMessage[]>([])
-  const [testInput, setTestInput] = useState('')
-  const [testLoading, setTestLoading] = useState(false)
 
   // Schedules tab state
   const [schedules, setSchedules] = useState<AgentSchedule[]>([])
@@ -737,77 +726,6 @@ export default function AgentBuilderPage() {
     }
   }
 
-  // Start test session
-  async function startTestSession() {
-    try {
-      const res = await fetch(`/api/admin/agents/${id}/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tool_mode: 'mock' })
-      })
-
-      if (!res.ok) throw new Error('Failed to start test session')
-
-      const data = await res.json()
-      setTestSession(data.session)
-      setTestMessages([])
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start test session')
-    }
-  }
-
-  // Send test message
-  async function sendTestMessage() {
-    if (!testSession || !testInput.trim()) return
-
-    setTestLoading(true)
-
-    try {
-      const res = await fetch(`/api/admin/agents/${id}/test/${testSession.id}/message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content: testInput })
-      })
-
-      if (!res.ok) throw new Error('Failed to send message')
-
-      const data = await res.json()
-
-      // Add messages to list
-      const newMessages: AgentTestMessage[] = []
-      if (data.userMessage) newMessages.push(data.userMessage)
-      if (data.toolCalls) newMessages.push(...data.toolCalls)
-      if (data.assistantMessage) newMessages.push(data.assistantMessage)
-
-      setTestMessages(prev => [...prev, ...newMessages])
-      setTestInput('')
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send message')
-    } finally {
-      setTestLoading(false)
-    }
-  }
-
-  // End test session
-  async function endTestSession() {
-    if (!testSession) return
-
-    try {
-      const res = await fetch(`/api/admin/agents/${id}/test/${testSession.id}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
-      })
-
-      if (!res.ok) throw new Error('Failed to end session')
-
-      setTestSession(null)
-      setTestMessages([])
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to end session')
-    }
-  }
-
   // Export config
   async function exportConfig() {
     window.open(`/api/admin/agents/${id}/export?format=download`, '_blank')
@@ -1099,10 +1017,6 @@ export default function AgentBuilderPage() {
                 Schedules
                 <Badge variant="secondary" className="ml-1">{schedules.length}</Badge>
               </TabsTrigger>
-              <TabsTrigger value="test" className="flex items-center gap-1 flex-shrink-0">
-                <Play className="h-4 w-4" />
-                Test
-              </TabsTrigger>
             </TabsList>
 
             {/* Identity Tab */}
@@ -1327,22 +1241,26 @@ export default function AgentBuilderPage() {
 
                   {/* Schema Validation Section */}
                   <div className="mt-4 border rounded-md">
-                    <button
-                      type="button"
-                      className="w-full flex items-center justify-between p-3 hover:bg-muted/50 transition-colors"
-                      onClick={() => setShowValidation(!showValidation)}
-                    >
-                      <div className="flex items-center gap-2">
+                    <div className="w-full flex items-center justify-between p-3 hover:bg-muted/50 transition-colors">
+                      <button
+                        type="button"
+                        className="flex items-center gap-2"
+                        onClick={() => setShowValidation(!showValidation)}
+                      >
                         <FileCheck className="h-4 w-4" />
                         <span className="font-medium">Schema Validation</span>
-                      </div>
+                        {showValidation ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </button>
                       <div className="flex items-center gap-2">
                         <Button
                           variant="outline"
                           size="sm"
                           disabled={selectedToolIds.size === 0 || isValidating}
-                          onClick={(e) => {
-                            e.stopPropagation()
+                          onClick={() => {
                             setIsValidating(true)
                             const selectedTools = allTools.filter(t => selectedToolIds.has(t.id))
                             const results = validateToolSchemas(selectedTools)
@@ -1362,8 +1280,7 @@ export default function AgentBuilderPage() {
                           variant="outline"
                           size="sm"
                           disabled={selectedToolIds.size === 0 || isProductionTesting}
-                          onClick={async (e) => {
-                            e.stopPropagation()
+                          onClick={async () => {
                             setIsProductionTesting(true)
                             setProductionResults([])
                             setProductionProgress({ completed: 0, total: selectedToolIds.size })
@@ -1373,7 +1290,7 @@ export default function AgentBuilderPage() {
                               const response = await fetch('/api/admin/agents/tools/test', {
                                 method: 'POST',
                                 headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ tool_ids: Array.from(selectedToolIds) })
+                                body: JSON.stringify({ tool_ids: Array.from(selectedToolIds), provider, model })
                               })
                               const data = await response.json()
                               if (data.results) {
@@ -1398,13 +1315,8 @@ export default function AgentBuilderPage() {
                             ? `Testing ${productionProgress.completed}/${productionProgress.total}...`
                             : 'Run Production Test'}
                         </Button>
-                        {showValidation ? (
-                          <ChevronDown className="h-4 w-4" />
-                        ) : (
-                          <ChevronRight className="h-4 w-4" />
-                        )}
                       </div>
-                    </button>
+                    </div>
 
                     {showValidation && (
                       <div className="border-t p-4 space-y-4">
@@ -2526,112 +2438,6 @@ export default function AgentBuilderPage() {
               </Card>
             </TabsContent>
 
-            {/* Test Tab */}
-            <TabsContent value="test">
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle>Test Sandbox</CardTitle>
-                      <CardDescription>Test your agent before publishing</CardDescription>
-                    </div>
-                    {testSession ? (
-                      <Button variant="outline" onClick={endTestSession}>End Session</Button>
-                    ) : (
-                      <Button onClick={startTestSession}>
-                        <Play className="h-4 w-4 mr-2" />
-                        Start Test Session
-                      </Button>
-                    )}
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  {testSession ? (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                        <Badge variant="outline">Session Active</Badge>
-                        <span>Version {testSession.version}</span>
-                        <span>Turns: {testSession.total_turns}</span>
-                      </div>
-
-                      <ScrollArea className="h-[400px] border rounded-md p-4">
-                        <div className="space-y-4">
-                          {testMessages.map((msg, i) => (
-                            <div
-                              key={i}
-                              className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}
-                            >
-                              {msg.role !== 'user' && (
-                                <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                                  <Bot className="h-4 w-4" />
-                                </div>
-                              )}
-                              <div
-                                className={`max-w-[80%] rounded-lg p-3 ${
-                                  msg.role === 'user'
-                                    ? 'bg-primary text-primary-foreground'
-                                    : msg.role === 'tool_use'
-                                    ? 'bg-yellow-100 dark:bg-yellow-900/30 border'
-                                    : msg.role === 'tool_result'
-                                    ? 'bg-green-100 dark:bg-green-900/30 border'
-                                    : 'bg-muted'
-                                }`}
-                              >
-                                {msg.tool_name && (
-                                  <div className="text-xs font-medium mb-1 flex items-center gap-1">
-                                    <Wrench className="h-3 w-3" />
-                                    {msg.tool_name}
-                                  </div>
-                                )}
-                                <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                                {msg.latency_ms && (
-                                  <p className="text-xs text-muted-foreground mt-1">
-                                    {msg.latency_ms}ms
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                          ))}
-                          {testMessages.length === 0 && (
-                            <p className="text-center text-muted-foreground py-8">
-                              Send a message to start testing
-                            </p>
-                          )}
-                        </div>
-                      </ScrollArea>
-
-                      <div className="flex gap-2">
-                        <Input
-                          value={testInput}
-                          onChange={e => setTestInput(e.target.value)}
-                          placeholder="Type a message..."
-                          onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendTestMessage()}
-                          disabled={testLoading}
-                        />
-                        <Button onClick={sendTestMessage} disabled={testLoading}>
-                          {testLoading ? (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Send className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="text-center py-12">
-                      <Bot className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
-                      <p className="text-muted-foreground mb-4">
-                        Start a test session to interact with your agent
-                      </p>
-                      <Button onClick={startTestSession}>
-                        <Play className="h-4 w-4 mr-2" />
-                        Start Test Session
-                      </Button>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-            </TabsContent>
           </Tabs>
         </div>
 

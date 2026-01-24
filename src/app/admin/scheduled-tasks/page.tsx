@@ -32,25 +32,7 @@ import { format } from 'date-fns'
 import { Calendar, CheckCircle, XCircle, Clock, AlertCircle, Bot, Loader2 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/skeleton'
 import { AgentScheduleExecution } from '@/types/agents'
-import { ScheduleTestPanel } from '@/components/admin/schedule-test-panel'
 import { ExecutionDetails } from '@/components/admin/execution-details'
-
-interface Schedule {
-  id: string
-  name: string
-  agent_id: string
-  cron_expression: string
-  timezone?: string
-  is_enabled: boolean
-  requires_approval: boolean
-  task_prompt: string
-  agent?: {
-    id: string
-    name: string
-    is_enabled: boolean
-    avatar_url: string | null
-  }
-}
 
 interface ScheduleExecution extends AgentScheduleExecution {
   schedule?: {
@@ -110,9 +92,6 @@ export default function ScheduledTasksPage() {
   const [detailDialogOpen, setDetailDialogOpen] = useState(false)
   const [selectedExecution, setSelectedExecution] = useState<ScheduleExecution | null>(null)
 
-  // Schedules for test panel
-  const [schedules, setSchedules] = useState<Schedule[]>([])
-
   const fetchExecutions = useCallback(async () => {
     setLoading(true)
     const params = new URLSearchParams()
@@ -127,23 +106,6 @@ export default function ScheduledTasksPage() {
   useEffect(() => {
     fetchExecutions()
   }, [fetchExecutions])
-
-  // Fetch all enabled schedules for testing
-  const fetchSchedules = useCallback(async () => {
-    try {
-      const res = await fetch('/api/admin/schedules?enabled=true')
-      if (res.ok) {
-        const data = await res.json()
-        setSchedules(data.schedules || [])
-      }
-    } catch (error) {
-      console.error('Fetch schedules error:', error)
-    }
-  }, [])
-
-  useEffect(() => {
-    fetchSchedules()
-  }, [fetchSchedules])
 
   async function handleApprove(execution: ScheduleExecution) {
     setActionLoading(execution.id)
@@ -228,14 +190,6 @@ export default function ScheduledTasksPage() {
           </SelectContent>
         </Select>
       </div>
-
-      {/* Test Panel */}
-      {schedules.length > 0 && (
-        <ScheduleTestPanel
-          schedules={schedules}
-          onRefresh={fetchExecutions}
-        />
-      )}
 
       <div className="rounded-md border">
         <Table>

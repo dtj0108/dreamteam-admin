@@ -20,7 +20,10 @@ import {
   Zap,
   Calendar,
   UsersRound,
-  CreditCard
+  CreditCard,
+  Cpu,
+  FlaskConical,
+  Brain
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { createClient } from '@/lib/supabase/client'
@@ -33,6 +36,8 @@ const navItems = [
   { href: '/admin/workspaces', label: 'Workspaces', icon: Building2 },
   { href: '/admin/feature-flags', label: 'Feature Flags', icon: Flag },
   { href: '/admin/api-keys', label: 'API Keys', icon: Key },
+  { href: '/admin/model-providers', label: 'Model Providers', icon: Cpu },
+  { href: '/admin/testing', label: 'Testing', icon: FlaskConical },
   { href: '/admin/audit-logs', label: 'Audit Logs', icon: ScrollText },
   { href: '/admin/settings', label: 'Settings', icon: Settings },
 ]
@@ -42,6 +47,7 @@ const agentBuilderItems = [
   { href: '/admin/teams', label: 'Teams', icon: UsersRound },
   { href: '/admin/plans', label: 'Plans', icon: CreditCard },
   { href: '/admin/scheduled-tasks', label: 'Scheduled Tasks', icon: Calendar },
+  { href: '/admin/memory', label: 'Memory', icon: Brain },
   { href: '/admin/skills', label: 'Skills', icon: BookOpen },
   { href: '/admin/tools', label: 'Tools', icon: Wrench },
   { href: '/admin/mcp', label: 'MCP Integrations', icon: Plug },

@@ -3,7 +3,8 @@ import { requireSuperadmin } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { generateAgentSDKConfig } from '@/lib/agent-sdk'
 import { generateText, tool, CoreMessage } from 'ai'
-import { anthropic } from '@/lib/ai-sdk-provider'
+import { getModelInstanceWithDbKey } from '@/lib/ai-sdk-provider'
+import type { AIProvider } from '@/types/agents'
 import { toolSchemaToZod } from '@/lib/schema-converter'
 
 // POST /api/admin/agents/[id]/test/[sessionId]/message - Send message in test
@@ -68,6 +69,9 @@ export async function POST(
   if (agentError || !agent) {
     return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
   }
+
+  // Get provider from agent (default to anthropic for backward compatibility)
+  const provider: AIProvider = (agent.provider as AIProvider) || 'anthropic'
 
   // Get previous messages for context
   const { data: previousMessages } = await supabase
@@ -138,8 +142,11 @@ export async function POST(
       })
     }
 
+    // Get model instance with API key from database (or fallback to env)
+    const modelInstance = await getModelInstanceWithDbKey(provider, sdkConfig.model)
+
     const response = await generateText({
-      model: anthropic(sdkConfig.model),
+      model: modelInstance,
       system: sdkConfig.systemPrompt,
       messages,
       tools: Object.keys(aiTools).length > 0 ? aiTools : undefined,

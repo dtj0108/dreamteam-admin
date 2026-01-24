@@ -6,8 +6,13 @@ import type {
   ValidationIssue,
   ValidationWarning,
   ToolValidationResult,
-  ProductionTestResult
+  ProductionTestResult,
+  AIProvider,
+  AgentModel
 } from '@/types/agents'
+import { MODEL_SDK_NAMES, PROVIDER_DEFAULT_MODEL } from '@/types/agents'
+import { createAdminClient } from '@/lib/supabase/admin'
+import { decryptApiKey } from '@/lib/encryption'
 
 // Valid JSON Schema types
 const VALID_JSON_SCHEMA_TYPES = ['string', 'number', 'integer', 'boolean', 'array', 'object', 'null']
@@ -358,46 +363,90 @@ function transformToJsonSchema(inputSchema: Record<string, unknown>): {
 }
 
 /**
+ * Provider-specific API configuration for production tests
+ */
+const PROVIDER_API_CONFIG: Record<AIProvider, {
+  baseUrl: string
+  headers: (apiKey: string) => Record<string, string>
+}> = {
+  anthropic: {
+    baseUrl: 'https://api.anthropic.com/v1/messages',
+    headers: (apiKey) => ({
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    })
+  },
+  xai: {
+    baseUrl: 'https://api.x.ai/v1/chat/completions',
+    headers: (apiKey) => ({
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    })
+  }
+}
+
+/**
  * Runs a production readiness test for a single tool
- * Sends the tool to Claude and verifies it returns a valid tool_use block
+ * Sends the tool to Claude/Grok and verifies it returns a valid tool_use block
  */
 export async function runProductionTest(
   tool: AgentTool,
-  apiKey: string
+  apiKey: string,
+  provider: AIProvider = 'anthropic',
+  model?: AgentModel
 ): Promise<ProductionTestResult> {
   const startTime = Date.now()
 
   try {
-    // Transform the schema to proper JSON Schema format for Anthropic API
+    // Transform the schema to proper JSON Schema format
     const normalizedSchema = transformToJsonSchema(tool.input_schema)
+    const config = PROVIDER_API_CONFIG[provider]
 
-    // Build the Anthropic API request with just this single tool
-    const anthropicTool = {
-      name: tool.name,
-      description: tool.description || `Tool: ${tool.name}`,
-      input_schema: normalizedSchema
-    }
+    // Use provided model or fall back to provider default
+    const resolvedModel = model || PROVIDER_DEFAULT_MODEL[provider]
+    const sdkModelName = MODEL_SDK_NAMES[resolvedModel]
 
+    let requestBody: Record<string, unknown>
 
-    const requestBody = {
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 1024,
-      tools: [anthropicTool],
-      messages: [
-        {
+    if (provider === 'anthropic') {
+      requestBody = {
+        model: sdkModelName,
+        max_tokens: 1024,
+        tools: [{
+          name: tool.name,
+          description: tool.description || `Tool: ${tool.name}`,
+          input_schema: normalizedSchema
+        }],
+        messages: [{
           role: 'user',
           content: `Demonstrate using the ${tool.name} tool. Call it with appropriate sample values. You must use the tool.`
-        }
-      ]
+        }]
+      }
+    } else {
+      // xAI uses OpenAI-compatible format
+      requestBody = {
+        model: sdkModelName,
+        max_tokens: 1024,
+        tools: [{
+          type: 'function',
+          function: {
+            name: tool.name,
+            description: tool.description || `Tool: ${tool.name}`,
+            parameters: normalizedSchema
+          }
+        }],
+        tool_choice: 'required',
+        messages: [{
+          role: 'user',
+          content: `Demonstrate using the ${tool.name} tool. Call it with appropriate sample values. You must use the tool.`
+        }]
+      }
     }
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    const response = await fetch(config.baseUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
+      headers: config.headers(apiKey),
       body: JSON.stringify(requestBody),
       signal: AbortSignal.timeout(10000) // 10 second timeout
     })
@@ -419,25 +468,55 @@ export async function runProductionTest(
 
     const data = await response.json()
 
-    // Check if Claude returned a tool_use block
-    const toolUseBlock = data.content?.find(
-      (block: { type: string }) => block.type === 'tool_use'
-    )
+    // Extract tool input based on provider response format
+    let toolInput: Record<string, unknown>
 
-    if (!toolUseBlock) {
-      return {
-        toolId: tool.id,
-        toolName: tool.name,
-        success: false,
-        toolUseReturned: false,
-        inputValid: false,
-        latencyMs,
-        error: 'No tool_use block returned by Claude'
+    if (provider === 'anthropic') {
+      const toolUseBlock = data.content?.find(
+        (block: { type: string }) => block.type === 'tool_use'
+      )
+      if (!toolUseBlock) {
+        return {
+          toolId: tool.id,
+          toolName: tool.name,
+          success: false,
+          toolUseReturned: false,
+          inputValid: false,
+          latencyMs,
+          error: 'No tool_use block returned by Claude'
+        }
+      }
+      toolInput = toolUseBlock.input as Record<string, unknown>
+    } else {
+      // xAI uses OpenAI-compatible format
+      const toolCall = data.choices?.[0]?.message?.tool_calls?.[0]
+      if (!toolCall) {
+        return {
+          toolId: tool.id,
+          toolName: tool.name,
+          success: false,
+          toolUseReturned: false,
+          inputValid: false,
+          latencyMs,
+          error: 'No tool call returned by Grok'
+        }
+      }
+      try {
+        toolInput = JSON.parse(toolCall.function?.arguments || '{}')
+      } catch {
+        return {
+          toolId: tool.id,
+          toolName: tool.name,
+          success: false,
+          toolUseReturned: true,
+          inputValid: false,
+          latencyMs,
+          error: 'Failed to parse tool call arguments'
+        }
       }
     }
 
     // Validate the input matches the schema
-    const toolInput = toolUseBlock.input as Record<string, unknown>
     const validation = validateInputAgainstSchema(toolInput, tool.input_schema)
 
     return {
@@ -478,13 +557,15 @@ export async function runProductionTest(
 export async function runProductionTests(
   tools: AgentTool[],
   apiKey: string,
+  provider: AIProvider = 'anthropic',
+  model?: AgentModel,
   onProgress?: (completed: number, total: number) => void
 ): Promise<ProductionTestResult[]> {
   const results: ProductionTestResult[] = []
 
   for (let i = 0; i < tools.length; i++) {
     const tool = tools[i]
-    const result = await runProductionTest(tool, apiKey)
+    const result = await runProductionTest(tool, apiKey, provider, model)
     results.push(result)
 
     if (onProgress) {
@@ -539,5 +620,68 @@ export function getMCPTestSummary(results: MCPTestResult[]): {
     total: results.length,
     passed,
     failed
+  }
+}
+
+// ============================================
+// PROVIDER API KEY FUNCTIONS
+// ============================================
+
+/**
+ * Fetches and decrypts the API key for a provider from the database
+ * Returns null if not configured or provider is disabled
+ */
+export async function getProviderApiKey(provider: AIProvider): Promise<string | null> {
+  try {
+    const supabase = createAdminClient()
+
+    const { data, error } = await supabase
+      .from('model_provider_configs')
+      .select('api_key_encrypted, is_enabled')
+      .eq('provider', provider)
+      .single()
+
+    if (error || !data) {
+      console.error(`Failed to fetch provider config for ${provider}:`, error?.message)
+      return null
+    }
+
+    if (!data.is_enabled) {
+      console.warn(`Provider ${provider} is not enabled`)
+      return null
+    }
+
+    if (!data.api_key_encrypted) {
+      console.warn(`No API key configured for provider ${provider}`)
+      return null
+    }
+
+    return decryptApiKey(data.api_key_encrypted)
+  } catch (err) {
+    console.error(`Error getting API key for provider ${provider}:`, err)
+    return null
+  }
+}
+
+/**
+ * Checks if a provider is enabled and has an API key configured
+ */
+export async function isProviderConfigured(provider: AIProvider): Promise<boolean> {
+  try {
+    const supabase = createAdminClient()
+
+    const { data, error } = await supabase
+      .from('model_provider_configs')
+      .select('api_key_encrypted, is_enabled')
+      .eq('provider', provider)
+      .single()
+
+    if (error || !data) {
+      return false
+    }
+
+    return data.is_enabled && !!data.api_key_encrypted
+  } catch {
+    return false
   }
 }

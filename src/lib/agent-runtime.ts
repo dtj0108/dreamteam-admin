@@ -2,7 +2,7 @@
 // This module provides a multi-turn agent runtime that can execute tasks,
 // track todos, and handle tool calls.
 
-import { generateText, tool, CoreMessage } from 'ai'
+import { generateText, streamText, tool, CoreMessage } from 'ai'
 import {
   anthropic,
   getModelPricing,
@@ -20,6 +20,7 @@ import { sendScheduledTaskNotification } from './agent-messaging'
 import { memorize } from './memory-service'
 import { buildMemoryTools, injectMemoryContext } from './memory-tools'
 import type { AgentWithRelations, SDKTool, ToolExecutionContext, AIProvider } from '@/types/agents'
+import type { StreamEvent, StreamAgentOptions } from '@/types/streaming'
 import type { MemoryContext } from '@/types/memory'
 import { z } from 'zod'
 
@@ -548,6 +549,252 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
         cacheReadTokens: 0,
       },
       error: error instanceof Error ? error.message : 'Unknown error',
+    }
+  }
+}
+
+/**
+ * Stream an agent execution with real-time event delivery
+ * Supports extended thinking (reasoning) for Anthropic models
+ *
+ * @param options - Configuration for streaming agent execution
+ * @yields StreamEvent objects for text, reasoning, tool calls, and completion
+ */
+export async function* streamAgent(options: StreamAgentOptions): AsyncGenerator<StreamEvent> {
+  const {
+    provider = 'anthropic',
+    model = 'claude-sonnet-4-5-20250929',
+    systemPrompt,
+    taskPrompt,
+    tools: sdkTools = [],
+    maxTurns = 10,
+    agentId,
+    enableReasoning = false,
+    reasoningBudgetTokens = 10000,
+    signal,
+  } = options
+
+  // Resolve the model ID for the provider
+  const modelId = resolveModelName(model, provider)
+  const features = PROVIDER_FEATURES[provider]
+
+  // Track tool calls and todos
+  const toolCalls: ToolCallRecord[] = []
+  const toolCallCache = new Map<string, unknown>()
+  let currentTodos: AgentTodo[] = []
+
+  const now = () => new Date().toISOString()
+
+  // Track todos via closure
+  const trackTodoUpdate = (todos: AgentTodo[]) => {
+    currentTodos = todos
+  }
+
+  // Track tool calls via closure
+  const trackToolCall = (record: ToolCallRecord) => {
+    toolCalls.push(record)
+  }
+
+  // Build AI SDK tools with execution handlers
+  const aiTools = buildToolsForAISDK(
+    sdkTools,
+    options.context || { workspaceId: '', executionType: 'test' },
+    toolCallCache,
+    trackToolCall,
+    trackTodoUpdate
+  )
+
+  // Build memory context if workspace is available
+  const memoryContext: MemoryContext | null = (options.context?.workspaceId)
+    ? {
+        workspaceId: options.context.workspaceId,
+        userId: options.context.userId,
+        agentId: agentId
+      }
+    : null
+
+  // Add memory tools if memory is enabled
+  if (memoryContext) {
+    const memoryTools = buildMemoryTools(memoryContext)
+    Object.assign(aiTools, memoryTools)
+  }
+
+  // Inject memory context into system prompt
+  let finalSystemPrompt = systemPrompt
+  if (memoryContext) {
+    try {
+      finalSystemPrompt = await injectMemoryContext(systemPrompt, taskPrompt, memoryContext)
+    } catch (error) {
+      console.error('Failed to inject memory context:', error)
+    }
+  }
+
+  try {
+    // Build provider-specific options
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const providerSpecificOptions: Record<string, any> = {}
+
+    // Enable extended thinking for Anthropic when requested
+    if (enableReasoning && provider === 'anthropic') {
+      providerSpecificOptions.providerOptions = {
+        anthropic: {
+          thinking: {
+            type: 'enabled',
+            budgetTokens: reasoningBudgetTokens
+          }
+        }
+      }
+    } else if (provider === 'anthropic' && features.supportsCaching) {
+      // Anthropic-specific: enable caching when not using reasoning
+      providerSpecificOptions.experimental_providerMetadata = {
+        anthropic: {
+          cacheControl: { type: 'ephemeral' },
+        },
+      }
+    }
+
+    // Use AI SDK streamText for streaming response
+    const result = streamText({
+      model: getModelInstance(provider, modelId),
+      system: finalSystemPrompt,
+      prompt: taskPrompt,
+      tools: aiTools,
+      maxSteps: maxTurns,
+      abortSignal: signal,
+      ...providerSpecificOptions,
+    })
+
+    let fullText = ''
+
+    // Iterate fullStream for all event types
+    for await (const part of result.fullStream) {
+      // Check for abort signal
+      if (signal?.aborted) {
+        yield {
+          type: 'error',
+          error: 'Stream aborted by client',
+          timestamp: now()
+        }
+        break
+      }
+
+      switch (part.type) {
+        case 'text-delta':
+          fullText += part.textDelta
+          yield {
+            type: 'text_delta',
+            content: part.textDelta,
+            timestamp: now()
+          }
+          break
+
+        case 'reasoning':
+          yield {
+            type: 'reasoning_delta',
+            content: part.textDelta,
+            timestamp: now()
+          }
+          break
+
+        case 'tool-call':
+          yield {
+            type: 'tool_call_start',
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            timestamp: now()
+          }
+          yield {
+            type: 'tool_call_end',
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            input: part.args as Record<string, unknown>,
+            timestamp: now()
+          }
+          break
+
+        case 'tool-result':
+          // Check if this is a TodoWrite call
+          if (part.toolName === 'TodoWrite') {
+            yield {
+              type: 'todo_update',
+              todos: currentTodos,
+              timestamp: now()
+            }
+          }
+          yield {
+            type: 'tool_result',
+            toolCallId: part.toolCallId,
+            toolName: part.toolName,
+            result: part.result,
+            success: true,
+            timestamp: now()
+          }
+          break
+
+        case 'error':
+          yield {
+            type: 'error',
+            error: part.error instanceof Error ? part.error.message : 'Unknown error',
+            timestamp: now()
+          }
+          break
+      }
+    }
+
+    // Get final usage from the result
+    const usage = await result.usage
+    const finalText = await result.text
+
+    // Calculate cost
+    let cacheCreationTokens = 0
+    let cacheReadTokens = 0
+    if (provider === 'anthropic') {
+      const providerMetadata = (await result.experimental_providerMetadata)?.anthropic as {
+        cacheCreationInputTokens?: number
+        cacheReadInputTokens?: number
+      } | undefined
+      cacheCreationTokens = providerMetadata?.cacheCreationInputTokens || 0
+      cacheReadTokens = providerMetadata?.cacheReadInputTokens || 0
+    }
+
+    const cost = calculateTokenCost(
+      modelId,
+      usage?.promptTokens || 0,
+      usage?.completionTokens || 0,
+      cacheCreationTokens,
+      cacheReadTokens
+    )
+
+    // Yield final done event
+    yield {
+      type: 'done',
+      result: finalText || fullText,
+      usage: {
+        inputTokens: usage?.promptTokens || 0,
+        outputTokens: usage?.completionTokens || 0,
+        cacheCreationTokens,
+        cacheReadTokens,
+        totalCost: cost.totalCost
+      },
+      timestamp: now()
+    }
+
+    // Log usage metrics for monitoring
+    console.log('Agent stream completed:', {
+      provider,
+      model: modelId,
+      inputTokens: usage?.promptTokens,
+      outputTokens: usage?.completionTokens,
+      toolCallsCount: toolCalls.length,
+      enableReasoning,
+    })
+
+  } catch (error) {
+    console.error('Agent stream error:', error)
+    yield {
+      type: 'error',
+      error: error instanceof Error ? error.message : 'Unknown error',
+      timestamp: now()
     }
   }
 }
