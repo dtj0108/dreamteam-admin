@@ -213,7 +213,8 @@ export async function PATCH(
   const body = await request.json()
 
   const allowedFields = [
-    'name', 'description', 'user_description', 'department_id', 'avatar_url', 'model',
+    'name', 'description', 'user_description', 'department_id', 'avatar_url',
+    'provider', 'model', 'provider_config',
     'system_prompt', 'permission_mode', 'max_turns', 'is_enabled',
     'is_head', 'config', 'plan_id'
   ]
@@ -225,11 +226,39 @@ export async function PATCH(
     }
   }
 
-  if (updates.model && !['sonnet', 'opus', 'haiku'].includes(updates.model as string)) {
+  // Valid models per provider
+  const VALID_MODELS: Record<string, string[]> = {
+    anthropic: ['sonnet', 'opus', 'haiku'],
+    xai: ['grok-4-fast', 'grok-3', 'grok-3-mini', 'grok-2'],
+  }
+
+  // Validate provider if specified
+  if (updates.provider && !['anthropic', 'xai'].includes(updates.provider as string)) {
     return NextResponse.json(
-      { error: 'Invalid model. Must be sonnet, opus, or haiku' },
+      { error: 'Invalid provider. Must be anthropic or xai' },
       { status: 400 }
     )
+  }
+
+  // Validate model matches provider
+  if (updates.model || updates.provider) {
+    // Need to fetch current agent to get the provider if not being updated
+    const supabaseCheck = createAdminClient()
+    const { data: currentAgent } = await supabaseCheck
+      .from('ai_agents')
+      .select('provider, model')
+      .eq('id', id)
+      .single()
+
+    const provider = (updates.provider as string) || currentAgent?.provider || 'anthropic'
+    const model = (updates.model as string) || currentAgent?.model
+
+    if (!VALID_MODELS[provider]?.includes(model)) {
+      return NextResponse.json(
+        { error: `Invalid model '${model}' for provider '${provider}'. Valid models: ${VALID_MODELS[provider]?.join(', ')}` },
+        { status: 400 }
+      )
+    }
   }
 
   if (updates.permission_mode && !['default', 'acceptEdits', 'bypassPermissions'].includes(updates.permission_mode as string)) {

@@ -1,4 +1,5 @@
-import Anthropic from '@anthropic-ai/sdk'
+import { generateText } from 'ai'
+import { anthropic } from './ai-sdk-provider'
 import type { AnalysisResult, LearnedRuleType } from '@/types/skills'
 
 interface AnalysisRequest {
@@ -57,14 +58,6 @@ Respond in JSON format only, with this structure:
 }`
 
 export async function analyzeTeaching(request: AnalysisRequest): Promise<AnalysisResult> {
-  const apiKey = process.env.ANTHROPIC_API_KEY
-
-  if (!apiKey) {
-    throw new Error('ANTHROPIC_API_KEY is not configured')
-  }
-
-  const client = new Anthropic({ apiKey })
-
   const userInstructionSection = request.userInstruction
     ? `## User's Instruction (if provided)\n${request.userInstruction}`
     : ''
@@ -77,25 +70,19 @@ export async function analyzeTeaching(request: AnalysisRequest): Promise<Analysi
     .replace('{{userInstructionSection}}', userInstructionSection)
 
   try {
-    const response = await client.messages.create({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 2048,
-      messages: [
-        {
-          role: 'user',
-          content: prompt
-        }
-      ]
+    const response = await generateText({
+      model: anthropic('claude-sonnet-4-20250514'),
+      prompt,
     })
 
     // Extract text content from response
-    const textContent = response.content.find(c => c.type === 'text')
-    if (!textContent || textContent.type !== 'text') {
+    const textContent = response.text
+    if (!textContent) {
       throw new Error('No text response from Claude')
     }
 
     // Parse JSON response
-    const jsonMatch = textContent.text.match(/\{[\s\S]*\}/)
+    const jsonMatch = textContent.match(/\{[\s\S]*\}/)
     if (!jsonMatch) {
       throw new Error('Could not parse JSON from response')
     }

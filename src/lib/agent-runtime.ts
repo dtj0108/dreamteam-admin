@@ -1,13 +1,24 @@
-// Agent Runtime - Executes agents using the Anthropic API
+// Agent Runtime - Executes agents using AI SDK with Anthropic provider
 // This module provides a multi-turn agent runtime that can execute tasks,
 // track todos, and handle tool calls.
 
-import Anthropic from '@anthropic-ai/sdk'
+import { generateText, tool, CoreMessage } from 'ai'
+import {
+  anthropic,
+  getModelPricing,
+  getModelInstance,
+  resolveModelName,
+  CACHE_WRITE_MULTIPLIER,
+  CACHE_READ_MULTIPLIER,
+  PROVIDER_FEATURES,
+} from './ai-sdk-provider'
+import { toolSchemaToZod } from './schema-converter'
 import { generateAgentSDKConfig, estimateToolTokens } from './agent-sdk'
 import { createAdminClient } from './supabase/admin'
 import { executeToolViaMCP } from './mcp-client'
 import { sendScheduledTaskNotification } from './agent-messaging'
-import type { AgentWithRelations, SDKTool, ToolExecutionContext } from '@/types/agents'
+import type { AgentWithRelations, SDKTool, ToolExecutionContext, AIProvider } from '@/types/agents'
+import { z } from 'zod'
 
 // Maximum characters for tool result content sent to the model
 const MAX_TOOL_RESULT_CHARS = 2000
@@ -118,10 +129,6 @@ function truncateToolResult(result: unknown): unknown {
   }
 }
 
-// Initialize Anthropic client
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-})
 
 // Todo item for tracking agent progress
 export interface AgentTodo {
@@ -173,31 +180,26 @@ export interface AgentContext {
   workspaceName?: string
 }
 
+// Provider-specific configuration
+export interface ProviderConfig {
+  // xAI specific - controls reasoning effort for Grok models
+  reasoningEffort?: 'low' | 'medium' | 'high'
+}
+
 // Options for running an agent
 export interface RunAgentOptions {
+  provider?: AIProvider
   model?: string
   systemPrompt: string
   taskPrompt: string
   tools?: SDKTool[]
   maxTurns?: number
   context?: ToolExecutionContext
+  providerConfig?: ProviderConfig
   onTodoUpdate?: (todos: AgentTodo[]) => void
   onToolCall?: (toolCall: ToolCallRecord) => void
   onMessage?: (role: 'user' | 'assistant', content: string) => void
 }
-
-// Model pricing per 1M tokens (in USD)
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  'claude-sonnet-4-5-20250514': { input: 3.0, output: 15.0 },
-  'claude-sonnet-4-20250514': { input: 3.0, output: 15.0 },
-  'claude-opus-4-5-20250514': { input: 15.0, output: 75.0 },
-  'claude-3-5-sonnet-20241022': { input: 3.0, output: 15.0 },
-  'claude-3-opus-20240229': { input: 15.0, output: 75.0 },
-}
-
-// Cache pricing modifiers (relative to input price)
-const CACHE_WRITE_MULTIPLIER = 1.25 // 25% more than input
-const CACHE_READ_MULTIPLIER = 0.1 // 90% less than input (10% of input price)
 
 /**
  * Calculate cost breakdown for token usage with caching
@@ -209,8 +211,8 @@ function calculateTokenCost(
   cacheCreationTokens: number = 0,
   cacheReadTokens: number = 0
 ): TokenCost {
-  // Get model pricing, default to Sonnet pricing if unknown
-  const pricing = MODEL_PRICING[model] || MODEL_PRICING['claude-sonnet-4-5-20250514']
+  // Get model pricing from ai-sdk-provider
+  const pricing = getModelPricing(model)
 
   // Calculate costs (prices are per 1M tokens)
   const inputCost = (inputTokens / 1_000_000) * pricing.input
@@ -235,311 +237,244 @@ function calculateTokenCost(
   }
 }
 
-// Built-in TodoWrite tool definition
-const TODO_WRITE_TOOL: Anthropic.Tool = {
-  name: 'TodoWrite',
-  description: 'Track and update task progress. Use this to plan tasks and mark them as completed.',
-  input_schema: {
-    type: 'object' as const,
-    properties: {
-      todos: {
-        type: 'array',
-        description: 'The updated todo list',
-        items: {
-          type: 'object',
-          properties: {
-            content: { type: 'string', description: 'The task description' },
-            status: { type: 'string', enum: ['pending', 'in_progress', 'completed'] },
-            activeForm: { type: 'string', description: 'Present continuous form of the task' },
-          },
-          required: ['content', 'status', 'activeForm'],
-        },
-      },
-    },
-    required: ['todos'],
-  },
-}
-
-// Convert SDK tools to Anthropic format
-function toAnthropicTools(sdkTools: SDKTool[]): Anthropic.Tool[] {
-  return sdkTools.map(tool => ({
-    name: tool.name,
-    description: tool.description,
-    input_schema: {
-      type: 'object' as const,
-      properties: (tool.input_schema.properties || {}) as Record<string, unknown>,
-      required: (Array.isArray(tool.input_schema.required)
-        ? tool.input_schema.required
-        : []) as string[],
-    },
-  }))
-}
-
-// Handle a tool call and return the result
-async function handleToolCall(
-  toolName: string,
-  toolInput: Record<string, unknown>,
-  currentTodos: AgentTodo[],
-  context: ToolExecutionContext,
-  onTodoUpdate?: (todos: AgentTodo[]) => void
-): Promise<{ result: unknown; updatedTodos: AgentTodo[] }> {
-  // Handle TodoWrite specially (local handler)
-  if (toolName === 'TodoWrite') {
-    const newTodos = (toolInput.todos as AgentTodo[]) || []
-    onTodoUpdate?.(newTodos)
-    return {
-      result: { success: true, message: 'Todos updated successfully' },
-      updatedTodos: newTodos,
-    }
-  }
-
-  // Enforce limits on expensive tools to reduce token usage
-  const processedInput = enforceToolLimits(toolName, toolInput)
-
-  // Execute via MCP server for all other tools
-  const mcpResult = await executeToolViaMCP({
-    toolName,
-    toolInput: processedInput,
-    workspaceId: context.workspaceId,
-    userId: context.userId,
-  })
-
-  // Log with info about limit enforcement for monitoring
-  const limitsEnforced = TOOL_DEFAULT_LIMITS[toolName] !== undefined || TOOL_MAX_LIMITS[toolName] !== undefined
-  console.log('MCP Tool Call:', {
-    toolName,
-    workspaceId: context.workspaceId,
-    executionType: context.executionType,
-    limitsEnforced,
-    originalInput: limitsEnforced ? toolInput : undefined,
-    processedInput: limitsEnforced ? processedInput : undefined,
-    success: mcpResult.success,
-    latencyMs: mcpResult.latencyMs,
-  })
-
-  return {
-    result: mcpResult.success
-      ? { success: true, data: mcpResult.result }
-      : { success: false, error: mcpResult.error },
-    updatedTodos: currentTodos,
-  }
-}
+// Zod schema for TodoWrite tool
+const todoSchema = z.object({
+  todos: z.array(z.object({
+    content: z.string().describe('The task description'),
+    status: z.enum(['pending', 'in_progress', 'completed']),
+    activeForm: z.string().describe('Present continuous form of the task'),
+  })).describe('The updated todo list'),
+})
 
 /**
- * Run an agent with the given configuration
+ * Build AI SDK tools from SDK tool definitions
+ * Converts JSON Schema to Zod and wraps execute functions with limit enforcement
+ */
+function buildToolsForAISDK(
+  sdkTools: SDKTool[],
+  context: ToolExecutionContext,
+  toolCallCache: Map<string, unknown>,
+  onToolCall?: (toolCall: ToolCallRecord) => void,
+  onTodoUpdate?: (todos: AgentTodo[]) => void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): Record<string, any> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: Record<string, any> = {}
+
+  // Add TodoWrite tool
+  tools['TodoWrite'] = tool({
+    description: 'Track and update task progress. Use this to plan tasks and mark them as completed.',
+    parameters: todoSchema,
+    execute: async ({ todos }) => {
+      onTodoUpdate?.(todos as AgentTodo[])
+      const result = { success: true, message: 'Todos updated successfully' }
+      onToolCall?.({
+        name: 'TodoWrite',
+        input: { todos },
+        output: result,
+        timestamp: new Date().toISOString(),
+      })
+      return result
+    },
+  })
+
+  // Add MCP tools
+  for (const sdkTool of sdkTools) {
+    tools[sdkTool.name] = tool({
+      description: sdkTool.description,
+      parameters: toolSchemaToZod(sdkTool.input_schema),
+      execute: async (args) => {
+        const toolInput = args as Record<string, unknown>
+
+        // Enforce limits on expensive tools
+        const processedInput = enforceToolLimits(sdkTool.name, toolInput)
+        const cacheKey = getToolCallCacheKey(sdkTool.name, processedInput)
+
+        // Check for duplicate call within this execution
+        if (toolCallCache.has(cacheKey)) {
+          console.log(`[runAgent] Returning cached result for: ${sdkTool.name}`)
+          const cachedResult = toolCallCache.get(cacheKey)
+          const result = { ...(cachedResult as Record<string, unknown>), _cached: true }
+          onToolCall?.({
+            name: sdkTool.name,
+            input: toolInput,
+            output: result,
+            timestamp: new Date().toISOString(),
+          })
+          return result
+        }
+
+        // Execute via MCP server
+        const mcpResult = await executeToolViaMCP({
+          toolName: sdkTool.name,
+          toolInput: processedInput,
+          workspaceId: context.workspaceId,
+          userId: context.userId,
+        })
+
+        const limitsEnforced = TOOL_DEFAULT_LIMITS[sdkTool.name] !== undefined || TOOL_MAX_LIMITS[sdkTool.name] !== undefined
+        console.log('MCP Tool Call:', {
+          toolName: sdkTool.name,
+          workspaceId: context.workspaceId,
+          executionType: context.executionType,
+          limitsEnforced,
+          success: mcpResult.success,
+          latencyMs: mcpResult.latencyMs,
+        })
+
+        const result = mcpResult.success
+          ? { success: true, data: mcpResult.result }
+          : { success: false, error: mcpResult.error }
+
+        // Cache the result for deduplication
+        toolCallCache.set(cacheKey, result)
+
+        // Truncate large results
+        const truncatedResult = truncateToolResult(result)
+
+        onToolCall?.({
+          name: sdkTool.name,
+          input: toolInput,
+          output: truncatedResult,
+          timestamp: new Date().toISOString(),
+        })
+
+        return truncatedResult
+      },
+    })
+  }
+
+  return tools
+}
+
+
+/**
+ * Run an agent with the given configuration using AI SDK
  */
 export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult> {
   const {
-    model = 'claude-sonnet-4-5-20250514',
+    provider = 'anthropic',
+    model = 'claude-sonnet-4-5-20250929',
     systemPrompt,
     taskPrompt,
-    tools = [],
+    tools: sdkTools = [],
     maxTurns = 10,
+    providerConfig,
     onTodoUpdate,
     onToolCall,
     onMessage,
   } = options
 
-  // Prepare tools - always include TodoWrite
-  const sdkToolsConverted = toAnthropicTools(tools)
-  const allTools: Anthropic.Tool[] = [
-    TODO_WRITE_TOOL,
-    ...sdkToolsConverted,
-  ]
+  // Resolve the model ID for the provider
+  const modelId = resolveModelName(model, provider)
+  const features = PROVIDER_FEATURES[provider]
 
-  // Add cache_control to the last tool to cache system + tools together
-  if (allTools.length > 0) {
-    const lastIndex = allTools.length - 1
-    allTools[lastIndex] = {
-      ...allTools[lastIndex],
-      cache_control: { type: 'ephemeral' },
-    } as Anthropic.Tool
+  // Track tool calls and todos
+  const toolCalls: ToolCallRecord[] = []
+  const toolCallCache = new Map<string, unknown>()
+  let currentTodos: AgentTodo[] = []
+
+  // Track todos via closure
+  const trackTodoUpdate = (todos: AgentTodo[]) => {
+    currentTodos = todos
+    onTodoUpdate?.(todos)
   }
 
-  // Initialize conversation (cache_control added dynamically before each API call)
-  const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: taskPrompt },
-  ]
+  // Track tool calls via closure
+  const trackToolCall = (record: ToolCallRecord) => {
+    toolCalls.push(record)
+    onToolCall?.(record)
+  }
 
-  let currentTodos: AgentTodo[] = []
-  const toolCalls: ToolCallRecord[] = []
-  // Track tool calls to prevent duplicates within same execution
-  const toolCallCache = new Map<string, unknown>()
-  let totalInputTokens = 0
-  let totalOutputTokens = 0
-  let totalCacheCreationTokens = 0
-  let totalCacheReadTokens = 0
-  let finalResult = ''
+  // Build AI SDK tools with execution handlers
+  const aiTools = buildToolsForAISDK(
+    sdkTools,
+    options.context || { workspaceId: '', executionType: 'test' },
+    toolCallCache,
+    trackToolCall,
+    trackTodoUpdate
+  )
 
   onMessage?.('user', taskPrompt)
 
   try {
-    for (let turn = 0; turn < maxTurns; turn++) {
-      // Make API call with prompt caching enabled
-      // Only cache system prompt + tools (2 breakpoints) - not user messages
-      // This reduces cache write costs for shorter multi-turn conversations
-      const response = await anthropic.messages.create({
-        model,
-        max_tokens: 4096,
-        system: [
-          {
-            type: 'text',
-            text: systemPrompt,
-            cache_control: { type: 'ephemeral' },
-          },
-        ],
-        tools: allTools,
-        messages,
-      })
+    // Build provider-specific options
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const providerSpecificOptions: Record<string, any> = {}
 
-      // Track usage (including cache metrics)
-      const turnCacheCreation = (response.usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens || 0
-      const turnCacheRead = (response.usage as { cache_read_input_tokens?: number }).cache_read_input_tokens || 0
-
-      totalInputTokens += response.usage.input_tokens
-      totalOutputTokens += response.usage.output_tokens
-      totalCacheCreationTokens += turnCacheCreation
-      totalCacheReadTokens += turnCacheRead
-
-      // Log turn-by-turn cache metrics for monitoring
-      console.log(`Agent turn ${turn + 1} cache metrics:`, {
-        inputTokens: response.usage.input_tokens,
-        outputTokens: response.usage.output_tokens,
-        cacheCreationTokens: turnCacheCreation,
-        cacheReadTokens: turnCacheRead,
-        cacheHitRate: turnCacheRead > 0
-          ? `${Math.round((turnCacheRead / (response.usage.input_tokens + turnCacheRead)) * 100)}%`
-          : '0%',
-      })
-
-      // Check if we're done (no tool use, or stop reason is end_turn)
-      const hasToolUse = response.content.some(block => block.type === 'tool_use')
-
-      // Extract text content
-      const textContent = response.content
-        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-        .map(block => block.text)
-        .join('\n')
-
-      if (textContent) {
-        finalResult = textContent
-        onMessage?.('assistant', textContent)
+    if (provider === 'anthropic' && features.supportsCaching) {
+      // Anthropic-specific: enable caching
+      providerSpecificOptions.experimental_providerMetadata = {
+        anthropic: {
+          cacheControl: { type: 'ephemeral' },
+        },
       }
-
-      // If no tool use, we're done
-      if (!hasToolUse || response.stop_reason === 'end_turn') {
-        return {
-          success: true,
-          result: finalResult,
-          todos: currentTodos,
-          toolCalls,
-          usage: {
-            inputTokens: totalInputTokens,
-            outputTokens: totalOutputTokens,
-            cacheCreationTokens: totalCacheCreationTokens,
-            cacheReadTokens: totalCacheReadTokens,
-            cost: calculateTokenCost(model, totalInputTokens, totalOutputTokens, totalCacheCreationTokens, totalCacheReadTokens),
-          },
-        }
+    } else if (provider === 'xai' && providerConfig?.reasoningEffort) {
+      // xAI-specific: reasoning effort setting
+      providerSpecificOptions.providerOptions = {
+        xai: { reasoningEffort: providerConfig.reasoningEffort },
       }
-
-      // Process tool calls
-      const assistantMessage: Anthropic.MessageParam = {
-        role: 'assistant',
-        content: response.content,
-      }
-      messages.push(assistantMessage)
-
-      // Handle each tool use
-      const toolResults: Anthropic.ToolResultBlockParam[] = []
-
-      for (const block of response.content) {
-        if (block.type === 'tool_use') {
-          const toolInput = block.input as Record<string, unknown>
-          // Process input with limit enforcement for cache key consistency
-          const processedInput = enforceToolLimits(block.name, toolInput)
-          const cacheKey = getToolCallCacheKey(block.name, processedInput)
-
-          // Check for duplicate call within this execution
-          if (toolCallCache.has(cacheKey)) {
-            console.log(`[runAgent] Skipping duplicate tool call: ${block.name}`)
-            const cachedResult = toolCallCache.get(cacheKey)
-
-            // Record the duplicate call (marked as cached)
-            const toolCallRecord: ToolCallRecord = {
-              name: block.name,
-              input: toolInput,
-              output: { ...cachedResult as Record<string, unknown>, _cached: true },
-              timestamp: new Date().toISOString(),
-            }
-            toolCalls.push(toolCallRecord)
-            onToolCall?.(toolCallRecord)
-
-            // Return cached result to agent with note
-            toolResults.push({
-              type: 'tool_result',
-              tool_use_id: block.id,
-              content: JSON.stringify({
-                ...(cachedResult as Record<string, unknown>),
-                _cached: true,
-                _message: 'Result from earlier call in this execution',
-              }),
-            })
-            continue
-          }
-
-          // Execute tool call
-          const { result, updatedTodos } = await handleToolCall(
-            block.name,
-            toolInput,
-            currentTodos,
-            options.context || { workspaceId: '', executionType: 'test' },
-            onTodoUpdate
-          )
-          currentTodos = updatedTodos
-
-          // Cache the result for deduplication
-          toolCallCache.set(cacheKey, result)
-
-          const toolCallRecord: ToolCallRecord = {
-            name: block.name,
-            input: toolInput,
-            output: result,
-            timestamp: new Date().toISOString(),
-          }
-          toolCalls.push(toolCallRecord)
-          onToolCall?.(toolCallRecord)
-
-          // Truncate large results to prevent token explosion
-          const truncatedResult = truncateToolResult(result)
-
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: JSON.stringify(truncatedResult),
-          })
-        }
-      }
-
-      // Add tool results to conversation (cache_control added dynamically before API call)
-      messages.push({
-        role: 'user',
-        content: toolResults,
-      })
     }
 
-    // Max turns reached
+    // Use AI SDK generateText with automatic tool loop
+    const result = await generateText({
+      model: getModelInstance(provider, modelId),
+      system: systemPrompt,
+      prompt: taskPrompt,
+      tools: aiTools,
+      maxSteps: maxTurns,
+      ...providerSpecificOptions,
+    })
+
+    // Extract text content
+    const finalResult = result.text || ''
+    if (finalResult) {
+      onMessage?.('assistant', finalResult)
+    }
+
+    // Extract usage metrics
+    const usage = result.usage || { promptTokens: 0, completionTokens: 0 }
+
+    // Cache metrics are only available for Anthropic
+    let cacheCreationTokens = 0
+    let cacheReadTokens = 0
+    if (provider === 'anthropic') {
+      const providerMetadata = result.experimental_providerMetadata?.anthropic as {
+        cacheCreationInputTokens?: number
+        cacheReadInputTokens?: number
+      } | undefined
+      cacheCreationTokens = providerMetadata?.cacheCreationInputTokens || 0
+      cacheReadTokens = providerMetadata?.cacheReadInputTokens || 0
+    }
+
+    // Log usage metrics for monitoring
+    console.log('Agent run completed:', {
+      provider,
+      model: modelId,
+      steps: result.steps?.length || 1,
+      inputTokens: usage.promptTokens,
+      outputTokens: usage.completionTokens,
+      ...(provider === 'anthropic' && { cacheCreationTokens, cacheReadTokens }),
+      toolCallsCount: toolCalls.length,
+    })
+
     return {
       success: true,
-      result: finalResult || 'Max turns reached',
+      result: finalResult,
       todos: currentTodos,
       toolCalls,
       usage: {
-        inputTokens: totalInputTokens,
-        outputTokens: totalOutputTokens,
-        cacheCreationTokens: totalCacheCreationTokens,
-        cacheReadTokens: totalCacheReadTokens,
-        cost: calculateTokenCost(model, totalInputTokens, totalOutputTokens, totalCacheCreationTokens, totalCacheReadTokens),
+        inputTokens: usage.promptTokens,
+        outputTokens: usage.completionTokens,
+        cacheCreationTokens,
+        cacheReadTokens,
+        cost: calculateTokenCost(
+          modelId,
+          usage.promptTokens,
+          usage.completionTokens,
+          cacheCreationTokens,
+          cacheReadTokens
+        ),
       },
     }
   } catch (error) {
@@ -550,11 +485,10 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentRunResult
       todos: currentTodos,
       toolCalls,
       usage: {
-        inputTokens: totalInputTokens,
-        outputTokens: totalOutputTokens,
-        cacheCreationTokens: totalCacheCreationTokens,
-        cacheReadTokens: totalCacheReadTokens,
-        cost: calculateTokenCost(model, totalInputTokens, totalOutputTokens, totalCacheCreationTokens, totalCacheReadTokens),
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
       },
       error: error instanceof Error ? error.message : 'Unknown error',
     }
@@ -835,12 +769,16 @@ export async function runAgentForChat(
   // Generate SDK config
   const sdkConfig = generateAgentSDKConfig(agent as AgentWithRelations)
 
+  // Get provider from agent config (default to anthropic for backward compatibility)
+  const provider: AIProvider = agent.provider || 'anthropic'
+
   // Log token breakdown for monitoring
   const toolTokenEstimate = estimateToolTokens(sdkConfig.tools)
   const systemPromptTokenEstimate = Math.ceil(sdkConfig.systemPrompt.length / 4)
   console.log('Agent token breakdown:', {
     agentId,
     agentName: agent.name,
+    provider,
     model: sdkConfig.model,
     systemPromptChars: sdkConfig.systemPrompt.length,
     estimatedSystemTokens: systemPromptTokenEstimate,
@@ -861,8 +799,8 @@ You have access to this user's data within this workspace. Do NOT ask the user f
     systemPrompt = contextSection + '\n\n' + systemPrompt
   }
 
-  // Build messages with conversation history
-  const messages: Anthropic.MessageParam[] = []
+  // Build messages with conversation history for AI SDK
+  const messages: CoreMessage[] = []
 
   if (conversationHistory && conversationHistory.length > 0) {
     for (const msg of conversationHistory) {
@@ -872,25 +810,18 @@ You have access to this user's data within this workspace. Do NOT ask the user f
 
   messages.push({ role: 'user', content: userMessage })
 
-  // Make API call (single turn for chat)
-  const response = await anthropic.messages.create({
-    model: sdkConfig.model,
-    max_tokens: 4096,
+  // Make API call using AI SDK (single turn for chat)
+  const result = await generateText({
+    model: getModelInstance(provider, sdkConfig.model),
     system: systemPrompt,
     messages,
   })
 
-  // Extract text content
-  const textContent = response.content
-    .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-    .map(block => block.text)
-    .join('\n')
-
   return {
-    response: textContent,
+    response: result.text,
     usage: {
-      inputTokens: response.usage.input_tokens,
-      outputTokens: response.usage.output_tokens,
+      inputTokens: result.usage?.promptTokens || 0,
+      outputTokens: result.usage?.completionTokens || 0,
     },
   }
 }

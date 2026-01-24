@@ -1,5 +1,5 @@
 // Agent SDK Config Generation
-// Generates Anthropic Claude Agent SDK-compatible configurations
+// Generates AI SDK-compatible configurations for multiple providers
 
 import type {
   AgentSDKConfig,
@@ -12,16 +12,23 @@ import type {
   SDKDelegation,
   SDKMind,
   AgentModel,
+  AIProvider,
   RuleType,
   PromptSectionType,
   MindContentType
 } from '@/types/agents'
+import { MODEL_MAP } from './ai-sdk-provider'
 
-// Model name mapping
-const MODEL_MAP: Record<AgentModel, SDKModelName> = {
-  haiku: 'claude-haiku-4-5-20251001',
-  sonnet: 'claude-sonnet-4-5-20250929',
-  opus: 'claude-opus-4-5-20251101'
+/**
+ * Get the SDK model name for a given model and provider
+ */
+function getSDKModelName(model: AgentModel, provider: AIProvider = 'anthropic'): SDKModelName {
+  const providerModels = MODEL_MAP[provider]
+  if (providerModels && model in providerModels) {
+    return providerModels[model] as SDKModelName
+  }
+  // Fallback to Anthropic Sonnet
+  return 'claude-sonnet-4-5-20250929'
 }
 
 /**
@@ -103,11 +110,14 @@ export function generateAgentSDKConfig(agent: AgentWithRelations): AgentSDKConfi
     rules
   )
 
+  // Get provider (default to anthropic for backward compatibility)
+  const provider: AIProvider = agent.provider || 'anthropic'
+
   return {
     name: agent.name,
     slug: agent.slug || undefined,
     description: agent.description || undefined,
-    model: MODEL_MAP[agent.model as AgentModel] || MODEL_MAP.sonnet,
+    model: getSDKModelName(agent.model as AgentModel, provider),
     systemPrompt: compiledPrompt,
     maxTurns: agent.max_turns,
     permissionMode: agent.permission_mode,
@@ -264,25 +274,40 @@ function parseTriggers(triggers: unknown): string[] | undefined {
 
 /**
  * Generate a TypeScript/JavaScript code snippet for the agent config
+ * Uses Vercel AI SDK pattern
  */
 export function generateAgentCodeSnippet(config: AgentSDKConfig): string {
-  const toolsCode = config.tools.length > 0
-    ? `tools: [\n${config.tools.map(t => `    { name: "${t.name}", description: "${t.description}" }`).join(',\n')}\n  ]`
-    : 'tools: []'
+  const toolNames = config.tools.map(t => t.name).join(', ')
+  const toolComment = config.tools.length > 0
+    ? `// Available tools: ${toolNames}`
+    : '// No tools configured'
 
-  return `import Agent from "@anthropic-ai/claude-agent-sdk";
+  return `import { generateText, tool } from 'ai'
+import { createAnthropic } from '@ai-sdk/anthropic'
+import { z } from 'zod'
 
-const agent = new Agent({
-  name: "${config.name}",
-  model: "${config.model}",
-  ${toolsCode},
+const anthropic = createAnthropic()
+
+${toolComment}
+const tools = {
+  // Define your tools here using AI SDK tool() function
+  // Example:
+  // myTool: tool({
+  //   description: 'Tool description',
+  //   parameters: z.object({ param: z.string() }),
+  //   execute: async ({ param }) => { return { result: param } }
+  // })
+}
+
+const result = await generateText({
+  model: anthropic('${config.model}'),
   system: \`${config.systemPrompt.replace(/`/g, '\\`')}\`,
-  maxTurns: ${config.maxTurns},
-});
+  prompt: "Your prompt here",
+  tools,
+  maxSteps: ${config.maxTurns},
+})
 
-// Run the agent
-const result = await agent.run({ content: "Your prompt here" });
-console.log(result);`
+console.log(result.text)`
 }
 
 /**

@@ -47,7 +47,10 @@ export interface MCPTestResult {
 // CORE AGENT TYPES
 // ============================================
 
-export type AgentModel = 'sonnet' | 'opus' | 'haiku'
+export type AIProvider = 'anthropic' | 'xai'
+export type AgentModel =
+  | 'sonnet' | 'opus' | 'haiku'  // Anthropic
+  | 'grok-4-fast' | 'grok-3' | 'grok-3-mini' | 'grok-2'  // xAI
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions'
 
 export interface Agent {
@@ -58,7 +61,9 @@ export interface Agent {
   user_description: string | null
   department_id: string | null
   avatar_url: string | null
+  provider: AIProvider
   model: AgentModel
+  provider_config: Record<string, unknown>
   system_prompt: string
   permission_mode: PermissionMode
   max_turns: number
@@ -362,14 +367,35 @@ export interface AgentSDKConfig {
 }
 
 export type SDKModelName =
+  // Anthropic
   | 'claude-sonnet-4-5-20250929'
   | 'claude-opus-4-5-20251101'
   | 'claude-haiku-4-5-20251001'
+  // xAI
+  | 'grok-4-fast'
+  | 'grok-3'
+  | 'grok-3-mini'
+  | 'grok-2'
 
 export interface SDKTool {
   name: string
   description: string
   input_schema: Record<string, unknown>
+}
+
+// AI SDK Tool Definition (for Vercel AI SDK)
+// The execute function is added at runtime, not stored in DB
+export interface AISDKToolContext {
+  workspaceId: string
+  userId?: string
+  executionType: 'chat' | 'scheduled' | 'test'
+  executionId?: string
+}
+
+export interface AISDKToolResult {
+  success: boolean
+  data?: unknown
+  error?: string
 }
 
 export interface SDKSkill {
@@ -411,7 +437,9 @@ export interface CreateAgentRequest {
   user_description?: string
   department_id?: string
   avatar_url?: string
+  provider?: AIProvider
   model?: AgentModel
+  provider_config?: Record<string, unknown>
   system_prompt: string
   permission_mode?: PermissionMode
   max_turns?: number
@@ -425,7 +453,9 @@ export interface UpdateAgentRequest {
   user_description?: string | null
   department_id?: string | null
   avatar_url?: string | null
+  provider?: AIProvider
   model?: AgentModel
+  provider_config?: Record<string, unknown>
   system_prompt?: string
   permission_mode?: PermissionMode
   max_turns?: number
@@ -539,15 +569,45 @@ export interface TestMessageResponse {
 // ============================================
 
 export const MODEL_DISPLAY_NAMES: Record<AgentModel, string> = {
+  // Anthropic
   haiku: 'Claude Haiku 4.5',
   sonnet: 'Claude Sonnet 4.5',
-  opus: 'Claude Opus 4.5'
+  opus: 'Claude Opus 4.5',
+  // xAI
+  'grok-4-fast': 'Grok 4 Fast',
+  'grok-3': 'Grok 3',
+  'grok-3-mini': 'Grok 3 Mini',
+  'grok-2': 'Grok 2',
 }
 
 export const MODEL_SDK_NAMES: Record<AgentModel, SDKModelName> = {
+  // Anthropic
   haiku: 'claude-haiku-4-5-20251001',
   sonnet: 'claude-sonnet-4-5-20250929',
-  opus: 'claude-opus-4-5-20251101'
+  opus: 'claude-opus-4-5-20251101',
+  // xAI (model names are the same for API and friendly name)
+  'grok-4-fast': 'grok-4-fast',
+  'grok-3': 'grok-3',
+  'grok-3-mini': 'grok-3-mini',
+  'grok-2': 'grok-2',
+}
+
+// Valid models per provider
+export const PROVIDER_MODELS: Record<AIProvider, AgentModel[]> = {
+  anthropic: ['sonnet', 'opus', 'haiku'],
+  xai: ['grok-4-fast', 'grok-3', 'grok-3-mini', 'grok-2'],
+}
+
+// Default model per provider
+export const PROVIDER_DEFAULT_MODEL: Record<AIProvider, AgentModel> = {
+  anthropic: 'sonnet',
+  xai: 'grok-3',
+}
+
+// Provider display names
+export const PROVIDER_DISPLAY_NAMES: Record<AIProvider, string> = {
+  anthropic: 'Anthropic (Claude)',
+  xai: 'xAI (Grok)',
 }
 
 export const RULE_TYPE_LABELS: Record<RuleType, string> = {

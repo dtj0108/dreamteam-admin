@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireSuperadmin } from '@/lib/admin-auth'
 import { createAdminClient } from '@/lib/supabase/admin'
 import { generateAgentSDKConfig } from '@/lib/agent-sdk'
-import Anthropic from '@anthropic-ai/sdk'
+import { generateText, tool, CoreMessage } from 'ai'
+import { anthropic } from '@/lib/ai-sdk-provider'
+import { toolSchemaToZod } from '@/lib/schema-converter'
 
 // POST /api/admin/agents/[id]/test/[sessionId]/message - Send message in test
 export async function POST(
@@ -97,8 +99,8 @@ export async function POST(
   // Generate SDK config
   const sdkConfig = generateAgentSDKConfig(agent)
 
-  // Build message history for Claude
-  const messages: Anthropic.MessageParam[] = (previousMessages || [])
+  // Build message history for AI SDK
+  const messages: CoreMessage[] = (previousMessages || [])
     .filter((m: { role: string }) => m.role === 'user' || m.role === 'assistant')
     .map((m: { role: string; content: string }) => ({
       role: m.role as 'user' | 'assistant',
@@ -108,38 +110,46 @@ export async function POST(
   // Add current message
   messages.push({ role: 'user', content })
 
-  // Call Claude API
+  // Call Claude API via AI SDK
   const startTime = Date.now()
 
   try {
-    const anthropic = new Anthropic()
+    // Build tools for AI SDK - for test mode we just track tool calls, not execute
+    const testConfig = session.test_config as { tool_mode?: string; mock_responses?: Record<string, unknown> }
+    const toolCallsTracked: Array<{ name: string; input: Record<string, unknown>; id: string }> = []
 
-    // Convert tools to Claude format
-    const tools: Anthropic.Tool[] = sdkConfig.tools.map(t => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.input_schema as Anthropic.Tool.InputSchema
-    }))
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const aiTools: Record<string, any> = {}
+    for (const t of sdkConfig.tools) {
+      aiTools[t.name] = tool({
+        description: t.description,
+        parameters: toolSchemaToZod(t.input_schema),
+        execute: async (args) => {
+          const toolInput = args as Record<string, unknown>
+          const toolId = `tool_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`
+          toolCallsTracked.push({ name: t.name, input: toolInput, id: toolId })
 
-    const response = await anthropic.messages.create({
-      model: sdkConfig.model,
-      max_tokens: 4096,
+          // Return mock response for test mode
+          if (testConfig?.tool_mode === 'mock') {
+            return testConfig.mock_responses?.[t.name] || { success: true, message: 'Mock response' }
+          }
+          return { success: true, message: 'Tool executed in test mode' }
+        },
+      })
+    }
+
+    const response = await generateText({
+      model: anthropic(sdkConfig.model),
       system: sdkConfig.systemPrompt,
       messages,
-      tools: tools.length > 0 ? tools : undefined
+      tools: Object.keys(aiTools).length > 0 ? aiTools : undefined,
+      maxSteps: 1, // Single turn for test
     })
 
     const latency = Date.now() - startTime
 
     // Extract text content
-    const textContent = response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-      .map(block => block.text)
-      .join('\n')
-
-    // Extract tool use blocks
-    const toolUseBlocks = response.content
-      .filter((block): block is Anthropic.ToolUseBlock => block.type === 'tool_use')
+    const textContent = response.text || '(No text response)'
 
     const assistantSequence = nextSequence + 1
 
@@ -149,10 +159,10 @@ export async function POST(
       .insert({
         session_id: sessionId,
         role: 'assistant',
-        content: textContent || '(No text response)',
+        content: textContent,
         latency_ms: latency,
-        tokens_input: response.usage.input_tokens,
-        tokens_output: response.usage.output_tokens,
+        tokens_input: response.usage?.promptTokens || 0,
+        tokens_output: response.usage?.completionTokens || 0,
         sequence_number: assistantSequence
       })
       .select()
@@ -162,16 +172,16 @@ export async function POST(
     const toolMessages = []
     let toolSequence = assistantSequence + 1
 
-    for (const toolUse of toolUseBlocks) {
+    for (const toolCall of toolCallsTracked) {
       const { data: toolMessage } = await supabase
         .from('agent_test_messages')
         .insert({
           session_id: sessionId,
           role: 'tool_use',
-          content: `Called ${toolUse.name}`,
-          tool_name: toolUse.name,
-          tool_input: toolUse.input as Record<string, unknown>,
-          tool_use_id: toolUse.id,
+          content: `Called ${toolCall.name}`,
+          tool_name: toolCall.name,
+          tool_input: toolCall.input,
+          tool_use_id: toolCall.id,
           sequence_number: toolSequence
         })
         .select()
@@ -183,9 +193,8 @@ export async function POST(
       toolSequence++
 
       // For mock mode, record a mock response
-      const testConfig = session.test_config as { tool_mode?: string; mock_responses?: Record<string, unknown> }
       if (testConfig?.tool_mode === 'mock') {
-        const mockResponse = testConfig.mock_responses?.[toolUse.name] || { success: true, message: 'Mock response' }
+        const mockResponse = testConfig.mock_responses?.[toolCall.name] || { success: true, message: 'Mock response' }
 
         await supabase
           .from('agent_test_messages')
@@ -193,9 +202,9 @@ export async function POST(
             session_id: sessionId,
             role: 'tool_result',
             content: JSON.stringify(mockResponse),
-            tool_name: toolUse.name,
+            tool_name: toolCall.name,
             tool_output: mockResponse as Record<string, unknown>,
-            tool_use_id: toolUse.id,
+            tool_use_id: toolCall.id,
             sequence_number: toolSequence
           })
 
@@ -203,12 +212,15 @@ export async function POST(
       }
     }
 
+    const inputTokens = response.usage?.promptTokens || 0
+    const outputTokens = response.usage?.completionTokens || 0
+
     // Update session stats
     await supabase
       .from('agent_test_sessions')
       .update({
         total_turns: session.total_turns + 1,
-        total_tokens: (session.total_tokens || 0) + response.usage.input_tokens + response.usage.output_tokens
+        total_tokens: (session.total_tokens || 0) + inputTokens + outputTokens
       })
       .eq('id', sessionId)
 
@@ -217,8 +229,8 @@ export async function POST(
       assistantMessage,
       toolCalls: toolMessages,
       usage: {
-        input_tokens: response.usage.input_tokens,
-        output_tokens: response.usage.output_tokens,
+        input_tokens: inputTokens,
+        output_tokens: outputTokens,
         latency_ms: latency
       }
     })

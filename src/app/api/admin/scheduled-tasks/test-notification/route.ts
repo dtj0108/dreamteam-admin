@@ -40,7 +40,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Extract workspace_id from the joined agent
-    const workspace_id = (schedule.ai_agent as { workspace_id: string | null } | null)?.workspace_id
+    // Supabase returns joined data - handle both array and object forms
+    const aiAgent = Array.isArray(schedule.ai_agent) ? schedule.ai_agent[0] : schedule.ai_agent
+    const workspace_id = (aiAgent as { workspace_id: string | null } | null)?.workspace_id
 
     if (!workspace_id) {
       return NextResponse.json({
@@ -136,7 +138,9 @@ export async function GET(request: NextRequest) {
     }
 
     // Extract workspace_id from the joined agent
-    const workspace_id = (schedule.ai_agent as { workspace_id: string | null } | null)?.workspace_id
+    // Supabase returns joined data - handle both array and object forms
+    const aiAgent = Array.isArray(schedule.ai_agent) ? schedule.ai_agent[0] : schedule.ai_agent
+    const workspace_id = (aiAgent as { workspace_id: string | null } | null)?.workspace_id
 
     const result: Record<string, unknown> = {
       schedule: {

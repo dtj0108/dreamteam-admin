@@ -94,6 +94,7 @@ import type {
   RuleType,
   PromptSectionType,
   AgentModel,
+  AIProvider,
   PermissionMode,
   AgentTestSession,
   AgentTestMessage,
@@ -107,11 +108,29 @@ import { validateToolSchemas, getValidationSummary, getProductionTestSummary, ge
 import { SCHEDULE_PRESETS, EXECUTION_STATUS_LABELS } from '@/types/agents'
 import { describeCron } from '@/lib/cron-utils'
 
-const MODEL_OPTIONS: { value: AgentModel; label: string }[] = [
-  { value: 'haiku', label: 'Claude Haiku 4.5 (Fast)' },
-  { value: 'sonnet', label: 'Claude Sonnet 4.5 (Balanced)' },
-  { value: 'opus', label: 'Claude Opus 4.5 (Most Capable)' }
+const PROVIDER_OPTIONS: { value: AIProvider; label: string }[] = [
+  { value: 'anthropic', label: 'Anthropic (Claude)' },
+  { value: 'xai', label: 'xAI (Grok)' },
 ]
+
+const MODEL_OPTIONS_BY_PROVIDER: Record<AIProvider, { value: AgentModel; label: string }[]> = {
+  anthropic: [
+    { value: 'haiku', label: 'Claude Haiku 4.5 (Fast)' },
+    { value: 'sonnet', label: 'Claude Sonnet 4.5 (Balanced)' },
+    { value: 'opus', label: 'Claude Opus 4.5 (Most Capable)' },
+  ],
+  xai: [
+    { value: 'grok-3-mini', label: 'Grok 3 Mini (Fast)' },
+    { value: 'grok-4-fast', label: 'Grok 4 Fast (Balanced)' },
+    { value: 'grok-2', label: 'Grok 2' },
+    { value: 'grok-3', label: 'Grok 3 (Most Capable)' },
+  ],
+}
+
+const DEFAULT_MODEL_BY_PROVIDER: Record<AIProvider, AgentModel> = {
+  anthropic: 'sonnet',
+  xai: 'grok-3',
+}
 
 const PERMISSION_MODE_OPTIONS: { value: PermissionMode; label: string; description: string }[] = [
   { value: 'default', label: 'Default', description: 'Standard permissions with user approval' },
@@ -235,6 +254,7 @@ export default function AgentBuilderPage() {
   const [slug, setSlug] = useState('')
   const [description, setDescription] = useState('')
   const [userDescription, setUserDescription] = useState('')
+  const [provider, setProvider] = useState<AIProvider>('anthropic')
   const [model, setModel] = useState<AgentModel>('sonnet')
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default')
   const [maxTurns, setMaxTurns] = useState(10)
@@ -327,6 +347,7 @@ export default function AgentBuilderPage() {
       setSlug(data.agent.slug || '')
       setDescription(data.agent.description || '')
       setUserDescription(data.agent.user_description || '')
+      setProvider(data.agent.provider || 'anthropic')
       setModel(data.agent.model)
       setPermissionMode(data.agent.permission_mode)
       setMaxTurns(data.agent.max_turns)
@@ -491,6 +512,22 @@ export default function AgentBuilderPage() {
     }
   }, [agent, fetchHierarchicalMind])
 
+  // Reset model to provider default when provider changes
+  // This is a controlled change - we track if user explicitly changed provider
+  const [providerInitialized, setProviderInitialized] = useState(false)
+  useEffect(() => {
+    if (providerInitialized) {
+      // Provider changed by user, reset model to default for new provider
+      const currentModelOptions = MODEL_OPTIONS_BY_PROVIDER[provider]
+      const isCurrentModelValid = currentModelOptions.some(opt => opt.value === model)
+      if (!isCurrentModelValid) {
+        setModel(DEFAULT_MODEL_BY_PROVIDER[provider])
+      }
+    }
+    setProviderInitialized(true)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider])
+
   // Save identity
   async function saveIdentity() {
     setSaving(true)
@@ -505,6 +542,7 @@ export default function AgentBuilderPage() {
           slug: slug || undefined,
           description: description || null,
           user_description: userDescription || null,
+          provider,
           model,
           permission_mode: permissionMode,
           max_turns: maxTurns,
@@ -1106,7 +1144,21 @@ export default function AgentBuilderPage() {
                     </p>
                   </div>
 
-                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+                  <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-5">
+                    <div className="space-y-2">
+                      <Label>Provider</Label>
+                      <Select value={provider} onValueChange={(v) => setProvider(v as AIProvider)}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PROVIDER_OPTIONS.map(opt => (
+                            <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
                     <div className="space-y-2">
                       <Label>Model</Label>
                       <Select value={model} onValueChange={(v) => setModel(v as AgentModel)}>
@@ -1114,7 +1166,7 @@ export default function AgentBuilderPage() {
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          {MODEL_OPTIONS.map(opt => (
+                          {MODEL_OPTIONS_BY_PROVIDER[provider].map(opt => (
                             <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
                           ))}
                         </SelectContent>
