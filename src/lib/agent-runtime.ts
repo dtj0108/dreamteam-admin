@@ -808,6 +808,7 @@ export async function runAgentById(
   options?: {
     maxTurns?: number
     context?: ToolExecutionContext
+    providerConfig?: ProviderConfig
     onTodoUpdate?: (todos: AgentTodo[]) => void
     onToolCall?: (toolCall: ToolCallRecord) => void
     onMessage?: (role: 'user' | 'assistant', content: string) => void
@@ -858,8 +859,12 @@ export async function runAgentById(
   // Generate SDK config
   const sdkConfig = generateAgentSDKConfig(agent as AgentWithRelations)
 
+  // Get provider from agent (defaults to anthropic if not set)
+  const provider: AIProvider = (agent.provider as AIProvider) || 'anthropic'
+
   // Run the agent with agentId for memory system
   return runAgent({
+    provider,
     model: sdkConfig.model,
     systemPrompt: sdkConfig.systemPrompt,
     taskPrompt,
@@ -867,6 +872,7 @@ export async function runAgentById(
     maxTurns: options?.maxTurns ?? sdkConfig.maxTurns,
     context: options?.context,
     agentId: agentId,
+    providerConfig: options?.providerConfig,
     onTodoUpdate: options?.onTodoUpdate,
     onToolCall: options?.onToolCall,
     onMessage: options?.onMessage,
